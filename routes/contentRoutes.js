@@ -7,10 +7,7 @@ const { uploadContent, processContent, getMyContent, getContentTopics } = requir
 const ApiUsage = require('../models/ApiUsage');
 const { DAILY_LIMIT } = require('../config/aiService');
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
-});
+const storage = multer.memoryStorage(); // disk storage not available on Vercel serverless
 
 const upload = multer({
   storage,
@@ -20,7 +17,7 @@ const upload = multer({
     if (allowed.includes(ext)) cb(null, true);
     else cb(new Error('Only PDF, PPT, Video, and Audio files are allowed.'));
   },
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB (Vercel request limit is 4.5 MB on hobby — keep realistic)
 });
 
 router.use(protect, authorize('faculty', 'admin'));
