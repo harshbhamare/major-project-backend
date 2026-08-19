@@ -30,7 +30,7 @@ if (process.env.NODE_ENV !== 'production') {
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);           // curl / Postman / mobile
-    if (allowedOrigins.length === 0) return callback(null, true); // no restriction set
+    if (allowedOrigins.length === 0) return callback(null, true); // no restriction set — allow all
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error(`CORS: origin ${origin} not allowed.`));
   },
