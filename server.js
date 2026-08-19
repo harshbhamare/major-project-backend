@@ -9,6 +9,9 @@ const connectDB = require('./config/db');
 
 const app = express();
 
+// ── Trust Vercel's proxy (required for express-rate-limit and req.ip) ─────────
+app.set('trust proxy', 1);
+
 // ── Connect DB (cached — safe for serverless) ─────────────────────────────────
 connectDB().catch(err => console.error('DB connect failed:', err.message));
 
@@ -29,10 +32,13 @@ if (process.env.NODE_ENV !== 'production') {
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);           // curl / Postman / mobile
-    if (allowedOrigins.length === 0) return callback(null, true); // no restriction set — allow all
+    // Allow requests with no origin (Postman, mobile, server-to-server)
+    if (!origin) return callback(null, true);
+    // If no allowed origins configured, permit everything (open during initial setup)
+    if (allowedOrigins.length === 0) return callback(null, true);
+    // Check against whitelist — never throw, just deny with null
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error(`CORS: origin ${origin} not allowed.`));
+    return callback(null, false); // deny silently — browser shows CORS error, not 500
   },
   credentials: true,
 }));
