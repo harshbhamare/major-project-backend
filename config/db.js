@@ -12,7 +12,7 @@ const connectDB = async () => {
       socketTimeoutMS: 45000,
     });
     isConnected = true;
-    console.log(`MongoDB connected: ${conn.connection.host}`);
+    console.log(`MongoDB connected`);
   } catch (error) {
     console.error(`MongoDB connection error: ${error.message}`);
     // Do NOT call process.exit() — it crashes Vercel serverless functions.

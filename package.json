@@ -23,6 +23,7 @@
     "officeparser": "^7.8.0",
     "pdf-parse": "^1.1.1",
     "qrcode": "^1.5.4",
+    "unpdf": "^1.8.1",
     "uuid": "^9.0.0"
   },
   "devDependencies": {

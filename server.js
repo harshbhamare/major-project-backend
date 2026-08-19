@@ -68,12 +68,17 @@ const generalLimiter = rateLimit({
 app.use('/api/auth', authLimiter);
 app.use('/api', generalLimiter);
 
-// ── Static uploads (local dev only — use cloud storage in production) ─────────
-// Vercel's filesystem is read-only; skip directory creation on serverless
-if (process.env.NODE_ENV !== 'production') {
-  const uploadsDir = path.join(__dirname, 'uploads');
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-  app.use('/uploads', express.static(uploadsDir));
+// ── Static uploads (local dev only) ──────────────────────────────────────────
+// Vercel's /var/task filesystem is read-only — never try to mkdir there.
+// Only serve static uploads when running locally.
+try {
+  if (process.env.NODE_ENV !== 'production') {
+    const uploadsDir = path.join(__dirname, 'uploads');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    app.use('/uploads', express.static(uploadsDir));
+  }
+} catch (_) {
+  // Silently skip — read-only filesystem on serverless
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -112,9 +117,9 @@ app.use((err, req, res, next) => {
 });
 
 // ── Local dev server ──────────────────────────────────────────────────────────
-// On Vercel this file is imported as a module — do NOT call listen().
-// Vercel detects the export and handles HTTP itself.
-if (process.env.NODE_ENV !== 'production') {
+// On Vercel this block must NOT run — module.exports = app is what Vercel uses.
+// Guard with VERCEL env var which Vercel always sets, regardless of NODE_ENV.
+if (!process.env.VERCEL) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () =>
     console.log(`Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`)
