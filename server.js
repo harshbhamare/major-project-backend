@@ -82,14 +82,16 @@ try {
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/api/auth',    require('./routes/authRoutes'));
-app.use('/api/content', require('./routes/contentRoutes'));
-app.use('/api/topics',  require('./routes/topicRoutes'));
-app.use('/api/modules', require('./routes/moduleRoutes'));
-app.use('/api/quizzes', require('./routes/quizRoutes'));
-app.use('/api/results', require('./routes/resultRoutes'));
-app.use('/api/rooms',   require('./routes/roomRoutes'));
-app.use('/api/admin',   require('./routes/adminRoutes'));
+app.use('/api/auth',       require('./routes/authRoutes'));
+app.use('/api/content',    require('./routes/contentRoutes'));
+app.use('/api/topics',     require('./routes/topicRoutes'));
+app.use('/api/modules',    require('./routes/moduleRoutes'));
+app.use('/api/quizzes',    require('./routes/quizRoutes'));
+app.use('/api/results',    require('./routes/resultRoutes'));
+app.use('/api/rooms',      require('./routes/roomRoutes'));
+app.use('/api/adaptation', require('./routes/adaptationRoutes'));
+app.use('/api/adaptive',   require('./routes/adaptiveActivityRoutes'));
+app.use('/api/admin',      require('./routes/adminRoutes'));
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) =>

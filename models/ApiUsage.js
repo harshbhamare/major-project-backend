@@ -4,12 +4,12 @@ const apiUsageSchema = new mongoose.Schema({
   triggeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   operation: {
     type: String,
-    enum: ['extract_topics', 'generate_quiz'],
+    enum: ['extract_topics', 'generate_quiz', 'generate_content', 'evaluate_answer'],
     required: true,
   },
   inputChars: { type: Number, default: 0 },  // chars sent to AI
   outputChars: { type: Number, default: 0 }, // chars received from AI
-  model: { type: String, default: 'gemini-2.5-flash-lite' },
+  model: { type: String, default: () => process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite' },
   success: { type: Boolean, default: true },
   error: { type: String },
   durationMs: { type: Number, default: 0 },

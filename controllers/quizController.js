@@ -3,6 +3,7 @@ const Topic = require('../models/Topic');
 const Module = require('../models/Module');
 const { generateQuizQuestions } = require('../config/aiService');
 const { studentCanAccessModule } = require('./moduleController');
+const { sanitizeAssessmentForClient } = require('../validators/assessmentValidator');
 
 // @desc Generate quiz from module topics using AI
 // @route POST /api/quizzes/generate/:moduleId
@@ -77,7 +78,7 @@ const getQuizzesByModule = async (req, res) => {
 // @route GET /api/quizzes/:id
 const getQuiz = async (req, res) => {
   try {
-    const quiz = await Quiz.findById(req.params.id).populate('moduleId', 'title');
+    const quiz = await Quiz.findById(req.params.id).populate('moduleId', '_id title');
     if (!quiz) return res.status(404).json({ message: 'Quiz not found' });
 
     // Students must have access to the parent module
@@ -85,9 +86,9 @@ const getQuiz = async (req, res) => {
       const allowed = await studentCanAccessModule(req.user._id, quiz.moduleId?._id || quiz.moduleId);
       if (!allowed) return res.status(403).json({ message: 'You do not have access to this quiz.' });
 
-      // Strip correct answers from student response
+      // Strip correct answers & evaluation data from student response
       const sanitized = quiz.toObject();
-      sanitized.questions = sanitized.questions.map(({ correctAnswer, ...rest }) => rest);
+      sanitized.questions = sanitized.questions.map(q => sanitizeAssessmentForClient(q));
       return res.json(sanitized);
     }
 

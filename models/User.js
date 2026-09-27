@@ -7,6 +7,17 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { type: String, enum: ['admin', 'faculty', 'student'], default: 'student' },
   isActive: { type: Boolean, default: true },
+  xp: { type: Number, default: 0 },
+  level: { type: Number, default: 1 },
+  streak: { type: Number, default: 1 },
+  lastActiveDate: { type: Date, default: Date.now },
+  badges: [{
+    id: { type: String, required: true },
+    title: { type: String, required: true },
+    icon: { type: String, default: '🏆' },
+    description: { type: String, default: '' },
+    unlockedAt: { type: Date, default: Date.now }
+  }],
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {

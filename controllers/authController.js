@@ -36,6 +36,10 @@ const register = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      xp: user.xp || 0,
+      level: user.level || 1,
+      streak: user.streak || 1,
+      badges: user.badges || [],
       token: generateToken(user._id),
     });
   } catch (err) {
@@ -69,6 +73,10 @@ const login = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      xp: user.xp || 0,
+      level: user.level || 1,
+      streak: user.streak || 1,
+      badges: user.badges || [],
       token: generateToken(user._id),
     });
   } catch (err) {
@@ -86,6 +94,10 @@ const getMe = async (req, res) => {
     email: req.user.email,
     role: req.user.role,
     isActive: req.user.isActive,
+    xp: req.user.xp || 0,
+    level: req.user.level || 1,
+    streak: req.user.streak || 1,
+    badges: req.user.badges || [],
   });
 };
 
