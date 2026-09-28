@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const path      = require('path');
 const fs        = require('fs');
 const connectDB = require('./config/db');
+const mongoose  = require('mongoose');
 
 const app = express();
 
@@ -81,6 +82,20 @@ try {
   // Silently skip — read-only filesystem on serverless
 }
 
+// ── Ensure DB connection for incoming API requests ─────────────────────────────
+app.use('/api', async (req, res, next) => {
+  if (req.path === '/health') return next();
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    return res.status(503).json({
+      message: 'Database connection error. Please ensure MongoDB is running and reachable.',
+      ...(process.env.NODE_ENV !== 'production' && { error: err.message }),
+    });
+  }
+});
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/api/auth',       require('./routes/authRoutes'));
 app.use('/api/content',    require('./routes/contentRoutes'));
@@ -95,7 +110,12 @@ app.use('/api/admin',      require('./routes/adminRoutes'));
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) =>
-  res.json({ status: 'ok', env: process.env.NODE_ENV, timestamp: new Date().toISOString() })
+  res.json({
+    status: 'ok',
+    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    env: process.env.NODE_ENV,
+    timestamp: new Date().toISOString()
+  })
 );
 
 // ── 404 ───────────────────────────────────────────────────────────────────────

@@ -1,24 +1,36 @@
 const mongoose = require('mongoose');
 
-// Cache the connection across serverless invocations
-let isConnected = false;
+let cachedPromise = null;
 
 const connectDB = async () => {
-  if (isConnected) return;
+  // 1 = connected
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
+
+  // 2 = connecting (wait for in-flight connection)
+  if (mongoose.connection.readyState === 2 && cachedPromise) {
+    return cachedPromise;
+  }
+
+  if (!process.env.MONGO_URI) {
+    throw new Error('MONGO_URI environment variable is not defined.');
+  }
 
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI, {
+    cachedPromise = mongoose.connect(process.env.MONGO_URI, {
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
     });
-    isConnected = true;
-    console.log(`MongoDB connected`);
+    const conn = await cachedPromise;
+    console.log(`MongoDB connected: ${conn.connection.host}`);
+    return conn;
   } catch (error) {
+    cachedPromise = null;
     console.error(`MongoDB connection error: ${error.message}`);
-    // Do NOT call process.exit() — it crashes Vercel serverless functions.
-    // Let the request fail gracefully instead.
     throw error;
   }
 };
 
 module.exports = connectDB;
+
