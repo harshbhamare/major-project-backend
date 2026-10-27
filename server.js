@@ -88,6 +88,24 @@ try {
   // Silently skip — read-only filesystem on serverless
 }
 
+// ── Development Request Logger ────────────────────────────────────────────────
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const ms = Date.now() - start;
+      if (res.statusCode >= 500) {
+        console.error(`🔴 [API ${res.statusCode}] ${req.method} ${req.originalUrl} (${ms}ms)`);
+      } else if (res.statusCode >= 400) {
+        console.warn(`🟡 [API ${res.statusCode}] ${req.method} ${req.originalUrl} (${ms}ms)`);
+      } else if (req.originalUrl !== '/api/health') {
+        console.log(`🟢 [API ${res.statusCode}] ${req.method} ${req.originalUrl} (${ms}ms)`);
+      }
+    });
+    next();
+  });
+}
+
 // ── Ensure DB connection for incoming API requests ─────────────────────────────
 app.use('/api', async (req, res, next) => {
   if (req.path === '/health') return next();
@@ -131,7 +149,8 @@ app.use((req, res) => res.status(404).json({ message: 'Resource not found.' }));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   const isDev = process.env.NODE_ENV !== 'production';
-  console.error(`[${new Date().toISOString()}] ${err.message}`);
+  console.error(`💥 [500 ERROR] ${req.method} ${req.originalUrl}:`, err.message);
+  if (isDev && err.stack) console.error(err.stack);
 
   if (err.code === 'LIMIT_FILE_SIZE')
     return res.status(413).json({ message: 'File too large. Maximum size is 100 MB.' });
@@ -139,7 +158,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ message: err.message });
 
   res.status(err.status || 500).json({
-    message: isDev ? err.message : 'An unexpected error occurred.',
+    message: err.message || 'An unexpected error occurred.',
     ...(isDev && { stack: err.stack }),
   });
 });
