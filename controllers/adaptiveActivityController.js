@@ -83,16 +83,22 @@ const generateActivity = async (req, res) => {
         // Re-serve the existing pending activity — no new AI call needed
         return res.json(buildClientActivity(existing));
       }
+    } else {
+      // When forceNew is requested, mark any older pending activities for this module/topic as abandoned
+      await AdaptiveActivity.updateMany(
+        { studentId, moduleId, status: 'pending' },
+        { $set: { status: 'abandoned' } }
+      ).catch(() => {});
     }
 
     // Fetch recent activity format history for anti-fatigue format rotation
     const recentActivities = await AdaptiveActivity.find({
       studentId,
       moduleId,
-      status: 'completed',
+      status: { $in: ['completed', 'abandoned'] },
     })
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(8)
       .select('assessmentFormat');
     const recentFormats = recentActivities.map(a => a.assessmentFormat).filter(Boolean);
 
@@ -183,7 +189,7 @@ const generateActivity = async (req, res) => {
       'question.questionText': { $exists: true },
     })
       .sort({ createdAt: -1 })
-      .limit(8)
+      .limit(15)
       .select('question.questionText');
 
     const previousQuestions = previousActivities
@@ -202,6 +208,7 @@ const generateActivity = async (req, res) => {
       mastery:           plan.mastery,
       trend:             plan.trend,
       previousQuestions,
+      recentFormats,
       attemptNumber:     previousQuestions.length + 1,
     };
 
@@ -282,7 +289,7 @@ const generateActivity = async (req, res) => {
           difficulty: topic.difficulty || 'normal',
           bloomLevel: 'understand',
           contentStrategy: 'worked_example',
-          assessmentFormat: 'mcq',
+          assessmentFormat: req.query.format || req.body?.format || 'code_tracing',
           learningObjective: `Understand the fundamental concepts of ${topic.title}`,
           reason: `Practice session for ${topic.title}`,
           topicChain: (moduleDoc?.topics || []).map(t => ({
@@ -291,6 +298,16 @@ const generateActivity = async (req, res) => {
             mastery: 0.5,
           })),
         };
+        const prevFallbackActivities = await AdaptiveActivity.find({
+          studentId: req.user._id,
+          topicId: topic._id,
+          'question.questionText': { $exists: true },
+        }).sort({ createdAt: -1 }).limit(10).select('question.questionText');
+        const prevQuestions = prevFallbackActivities.map(a => a.question?.questionText).filter(Boolean);
+        const formatRotation = ['code_tracing', 'debugging', 'code_completion', 'scenario_based', 'mcq'];
+        const chosenFormat = req.query.format || req.body?.format || formatRotation[prevQuestions.length % formatRotation.length];
+        fallbackPlan.assessmentFormat = chosenFormat;
+
         const contentResult = await generateAdaptiveContent(fallbackPlan, topic.summary || '', req.user._id).catch(() => null);
         const question = await generateAdaptiveAssessment({
           topic: fallbackPlan.topicTitle,
@@ -298,8 +315,10 @@ const generateActivity = async (req, res) => {
           learningObjective: fallbackPlan.learningObjective,
           bloomLevel: 'understand',
           difficulty: 'normal',
-          assessmentFormat: 'mcq',
+          assessmentFormat: chosenFormat,
           contentStrategy: 'worked_example',
+          previousQuestions: prevQuestions,
+          attemptNumber: prevQuestions.length + 1,
         }, req.user._id).catch(() => null);
 
         if (question) {
@@ -309,7 +328,7 @@ const generateActivity = async (req, res) => {
             topicId: topic._id,
             plan: fallbackPlan,
             content: contentResult,
-            assessmentFormat: question.assessmentFormat || 'mcq',
+            assessmentFormat: question.assessmentFormat || chosenFormat,
             difficulty: 'normal',
             bloomLevel: 'understand',
             learningObjective: fallbackPlan.learningObjective,

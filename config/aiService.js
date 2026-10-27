@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const ApiUsage = require('../models/ApiUsage');
 const { validateAssessment } = require('../validators/assessmentValidator');
 const { evaluateAssessment } = require('../services/assessmentEvaluator');
+const { getAdaptiveFallbackQuestion } = require('./adaptiveFallbackBank');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -964,327 +965,36 @@ function validateAndNormaliseQuestion(raw, spec) {
 }
 
 function generateFallbackAdaptiveQuestion(spec) {
-  const { topic, learningObjective, difficulty = 'normal', bloomLevel, assessmentFormat, mastery = 0.5, attemptNumber = 1, previousQuestions = [] } = spec;
-  const cleanTopic = (topic || 'this concept').trim();
-  const funcName = cleanTopic.replace(/[^a-zA-Z0-9]/g, '') || 'Solution';
-  const variant = (attemptNumber + previousQuestions.length) % 3;
-
-  let raw;
-  switch (assessmentFormat) {
-    case 'short_answer':
-      if (variant === 1) {
-        raw = {
-          questionText: `Describe a real-world scenario where ${cleanTopic} is essential for writing clean software:`,
-          assessmentFormat: 'short_answer',
-          payload: {
-            placeholder: `Describe a practical example of ${cleanTopic}...`,
-            suggestedLength: '1-2 sentences',
-            context: `Topic: ${cleanTopic}`,
-            hint: `Think of an application or website feature that depends on ${cleanTopic}.`,
-          },
-          evaluationData: {
-            modelAnswer: `${cleanTopic} is used in apps to handle user actions, process data, and keep results predictable.`,
-            keywords: [cleanTopic.toLowerCase(), 'user', 'data', 'process', 'result', 'feature'],
-          },
-          explanation: `Core Reasoning: Explaining practical use cases demonstrates conceptual transfer of ${cleanTopic}.\nMisconception Avoided: Thinking ${cleanTopic} is only theoretical.\nStudent Pro-Tip: Relate it to real features like shopping carts, user logins, or scoreboards.`,
-        };
-      } else if (variant === 2) {
-        raw = {
-          questionText: `What is the most common mistake beginners make when using ${cleanTopic}, and how do you avoid it?`,
-          assessmentFormat: 'short_answer',
-          payload: {
-            placeholder: `Explain a common pitfall with ${cleanTopic}...`,
-            suggestedLength: '1-2 sentences',
-            context: `Topic: ${cleanTopic}`,
-            hint: `Consider edge cases or forgetting to initialize or return values.`,
-          },
-          evaluationData: {
-            modelAnswer: `A common mistake is mishandling inputs or forgetting initial setup, which can be avoided by checking assumptions and tracing step-by-step.`,
-            keywords: ['mistake', 'avoid', 'check', 'input', 'trace', cleanTopic.toLowerCase()],
-          },
-          explanation: `Core Reasoning: Recognizing pitfalls protects against common bugs when implementing ${cleanTopic}.\nMisconception Avoided: Rushing into code without verifying edge cases.\nStudent Pro-Tip: Double check variable states before and after processing.`,
-        };
-      } else {
-        raw = {
-          questionText: `In simple words, what is ${cleanTopic} and why do we use it?`,
-          assessmentFormat: 'short_answer',
-          payload: {
-            placeholder: `Explain what ${cleanTopic} does in 1-2 simple sentences...`,
-            suggestedLength: '1-2 sentences',
-            context: `Topic: ${cleanTopic}`,
-            hint: `Think about what ${cleanTopic} helps the computer remember or do.`,
-          },
-          evaluationData: {
-            modelAnswer: `${cleanTopic} helps a program organize data and perform step-by-step actions clearly.`,
-            keywords: [cleanTopic.toLowerCase(), 'store', 'organize', 'action', 'data', 'step'],
-          },
-          explanation: `Core Reasoning: A good explanation explains the purpose of ${cleanTopic} using simple, natural words.\nMisconception Avoided: Trying to memorize complex jargon instead of the simple idea.\nStudent Pro-Tip: Explain it as if you were teaching a friend who is new to computers.`,
-        };
-      }
-      break;
-
-    case 'code_completion': {
-      if (variant === 1) {
-        raw = {
-          questionText: `Complete the conditional logic for ${cleanTopic} to check if score exceeds 50:`,
-          assessmentFormat: 'code_completion',
-          payload: {
-            codeSnippet: `// Check if score is passing for ${cleanTopic}\nlet score = 75;\nif (score ___ 50) {\n  console.log("Passed!");\n}`,
-            language: 'javascript',
-            placeholder: '>',
-            hint: `Use the greater-than comparison operator '>' to check if score is above 50.`,
-          },
-          evaluationData: {
-            correctCompletion: '>',
-            acceptedSolutions: ['>', '>=', '> 50'],
-          },
-          explanation: `Core Reasoning: In programming, the '>' operator evaluates whether the left value is strictly greater than the right value.\nMisconception Avoided: Confusing assignment '=' with comparison '>'.\nStudent Pro-Tip: Comparison operators evaluate to true or false.`,
-        };
-      } else if (variant === 2) {
-        raw = {
-          questionText: `Complete the function return statement for ${cleanTopic} to return result:`,
-          assessmentFormat: 'code_completion',
-          payload: {
-            codeSnippet: `// Complete the return statement for ${cleanTopic}\nfunction compute${funcName}(x) {\n  let result = x * 2;\n  ___ result;\n}`,
-            language: 'javascript',
-            placeholder: 'return',
-            hint: `Use the 'return' keyword to pass the result back to the caller.`,
-          },
-          evaluationData: {
-            correctCompletion: 'return',
-            acceptedSolutions: ['return', 'return result;'],
-          },
-          explanation: `Core Reasoning: The 'return' keyword outputs the computed value from a function call.\nMisconception Avoided: Printing with console.log instead of returning the value.\nStudent Pro-Tip: Functions need explicit returns if the caller expects data back.`,
-        };
-      } else {
-        const isBeginnerFallback = (difficulty === 'easy' || mastery < 0.60);
-        if (isBeginnerFallback) {
-          raw = {
-            questionText: `Complete the code to assign the value 10 to the variable count for ${cleanTopic}:`,
-            assessmentFormat: 'code_completion',
-            payload: {
-              codeSnippet: `// Step 1: Assign the number 10 to the variable count\nlet count = ___;\nconsole.log(count);`,
-              language: 'javascript',
-              placeholder: '10',
-              hint: `Use the assignment operator '=' to assign 10 to the variable count.`,
-            },
-            evaluationData: {
-              correctCompletion: '10',
-              acceptedSolutions: ['10', '10;', 'let count = 10;', 'let count = 10'],
-            },
-            explanation: `Core Reasoning: In programming, '=' is the assignment operator that stores the value on its right into the variable on its left. Writing 10 assigns 10 to count.\nMisconception Avoided: Confusing assignment '=' with equality testing '=='.\nStudent Pro-Tip: The variable name goes on the left, and the value you want to assign goes on the right.`,
-          };
-        } else {
-          raw = {
-            questionText: `Complete the following function to process elements for ${cleanTopic}:`,
-            assessmentFormat: 'code_completion',
-            payload: {
-              codeSnippet: `// Complete the following function for ${cleanTopic}\nfunction execute${funcName}(data) {\n  /* COMPLETE HERE */\n}`,
-              language: 'javascript',
-              placeholder: 'return data;',
-              hint: `Consider what data structure or processed value needs to be returned to satisfy ${cleanTopic}.`,
-            },
-            evaluationData: {
-              correctCompletion: 'return data;',
-              acceptedSolutions: ['return data;', 'return (data);'],
-            },
-            explanation: `Core Reasoning: The completion requires returning the processed result matching ${cleanTopic}.\nMisconception Avoided: Forgetting to return a value or returning an unformatted raw variable.\nStudent Pro-Tip: Check the function signature and expected return type before writing your return statement.`,
-          };
-        }
-      }
-      break;
+  try {
+    const fallbackRaw = getAdaptiveFallbackQuestion(spec);
+    if (fallbackRaw) {
+      return validateAndNormaliseQuestion(fallbackRaw, spec);
     }
-
-    case 'code_tracing':
-      if (variant === 1) {
-        raw = {
-          questionText: `Trace this conditional execution for ${cleanTopic} and determine the logged output:`,
-          assessmentFormat: 'code_tracing',
-          payload: {
-            codeSnippet: `// Trace execution for ${cleanTopic}:\nlet total = 10;\nlet bonus = 5;\nif (total > 8) {\n  total += bonus;\n} else {\n  total -= bonus;\n}\nconsole.log(total);`,
-            language: 'javascript',
-            options: ['15', '10', '5', '8'],
-            hint: `Check if 10 > 8 is true, then follow the corresponding branch.`,
-          },
-          evaluationData: {
-            expectedOutput: '15',
-          },
-          explanation: `Core Reasoning: total starts at 10. The condition (10 > 8) is true, so the if block executes: total = 10 + 5 = 15. The else block is skipped. Output is 15.\nMisconception Avoided: Executing both the if and else blocks.\nStudent Pro-Tip: In an if-else structure, only one branch will ever execute.`,
-        };
-      } else if (variant === 2) {
-        raw = {
-          questionText: `Trace the countdown loop for ${cleanTopic} and identify the final printed value:`,
-          assessmentFormat: 'code_tracing',
-          payload: {
-            codeSnippet: `// Trace execution for ${cleanTopic}:\nlet value = 12;\nfor (let i = 0; i < 2; i++) {\n  value -= 3;\n}\nconsole.log(value);`,
-            language: 'javascript',
-            options: ['6', '9', '12', '3'],
-            hint: `Run through each of the two loop iterations: subtract 3 each time.`,
-          },
-          evaluationData: {
-            expectedOutput: '6',
-          },
-          explanation: `Core Reasoning: value starts at 12. Iteration 1 (i=0): value = 12 - 3 = 9. Iteration 2 (i=1): value = 9 - 3 = 6. Loop ends when i=2. Final logged value is 6.\nMisconception Avoided: Subtracting only once or forgetting that loops repeat.\nStudent Pro-Tip: Count iterations starting from 0 up to, but not including, the limit.`,
-        };
-      } else {
-        raw = {
-          questionText: `Trace the execution for ${cleanTopic} and determine the final logged value:`,
-          assessmentFormat: 'code_tracing',
-          payload: {
-            codeSnippet: `// Trace the execution for ${cleanTopic}:\nlet state = 2;\nfor (let i = 0; i < 3; i++) {\n  state += i;\n}\nconsole.log(state);`,
-            language: 'javascript',
-            options: ['5', '6', '8', '2'],
-            hint: `Track the variable 'state' step-by-step through each iteration of the loop from i = 0 to i = 2.`,
-          },
-          evaluationData: {
-            expectedOutput: '5',
-          },
-          explanation: `Core Reasoning: Trace: Initial state=2. i=0 -> state=2+0=2. i=1 -> state=2+1=3. i=2 -> state=3+2=5. Loop terminates at i=3. Final console.log prints 5.\nMisconception Avoided: Adding the loop termination bound (i=3) or miscounting loop iteration steps.\nStudent Pro-Tip: Write out a quick two-column trace table with 'i' and 'state' to avoid mental math slip-ups.`,
-        };
-      }
-      break;
-
-    case 'debugging':
-      if (variant === 1) {
-        raw = {
-          questionText: `Identify the off-by-one bug in this ${cleanTopic} loop:`,
-          assessmentFormat: 'debugging',
-          payload: {
-            buggyCode: `// Find the bug in accessing array elements for ${cleanTopic}:\nfunction printFirst(arr) {\n  for (let i = 0; i <= arr.length; i++) {\n    console.log(arr[i]);\n  }\n}`,
-            language: 'javascript',
-            errorDescription: `The loop prints 'undefined' on its final iteration.`,
-            hint: `Arrays are 0-indexed. The last valid index is arr.length - 1.`,
-          },
-          evaluationData: {
-            identifiedBug: 'Line 2: condition i <= arr.length causes out of bounds. Fix: change to i < arr.length',
-            fixedCode: 'for (let i = 0; i < arr.length; i++)',
-          },
-          explanation: `Core Reasoning: Array indices range from 0 to length - 1. Using '<=' accesses arr[arr.length], which is undefined. The fix is 'i < arr.length'.\nMisconception Avoided: Thinking '<=' is needed to reach the end of an array.\nStudent Pro-Tip: For 0-indexed arrays, strictly use '< arr.length'.`,
-        };
-      } else {
-        raw = {
-          questionText: `Identify the bug in this ${cleanTopic} snippet and describe the necessary fix:`,
-          assessmentFormat: 'debugging',
-          payload: {
-            buggyCode: `// Identify the bug in this ${cleanTopic} snippet:\nfunction calculate${funcName}(items) {\n  let sum;\n  for (let i = 0; i < items.length; i++) {\n    sum += items[i];\n  }\n  return sum;\n}`,
-            language: 'javascript',
-            errorDescription: `Calling calculate${funcName}([1, 2, 3]) results in NaN.`,
-            hint: `Look closely at how the accumulator variable 'sum' is declared and whether it has an initial numeric value before addition.`,
-          },
-          evaluationData: {
-            identifiedBug: 'Line 2: sum is undefined. Fix: initialize sum = 0;',
-            fixedCode: 'let sum = 0;',
-          },
-          explanation: `Core Reasoning: In JavaScript, an uninitialized variable declared with 'let sum;' starts as 'undefined'. Adding any number to undefined yields 'NaN'. Initializing 'let sum = 0;' fixes this.\nMisconception Avoided: Assuming uninitialized number variables default to 0 automatically like in some other languages.\nStudent Pro-Tip: Always initialize accumulators and counters with 0 before entering a loop.`,
-        };
-      }
-      break;
-
-    case 'scenario_based':
-      if (variant === 1) {
-        raw = {
-          questionText: `How should a program handle unexpected input when executing ${cleanTopic}?`,
-          assessmentFormat: 'scenario_based',
-          payload: {
-            scenario: `A user enters negative numbers or empty text into an application utilizing ${cleanTopic}. How should your code respond?`,
-            options: [
-              `Validate the input first and provide helpful feedback before proceeding`,
-              `Ignore the error and let the app crash without messages`,
-              `Delete all files on the user's hard drive`,
-              `Hardcode random fake values without checking`,
-            ],
-            hint: `Think about defensive programming and giving good feedback to users.`,
-          },
-          evaluationData: {
-            bestChoice: `Validate the input first and provide helpful feedback before proceeding`,
-            tradeoffs: `Input validation prevents runtime exceptions and keeps the application secure and robust.`,
-          },
-          explanation: `Core Reasoning: Checking and validating user inputs before running ${cleanTopic} logic prevents crashes and produces friendly error messages.\nMisconception Avoided: Assuming users will always provide ideal input.\nStudent Pro-Tip: Always validate external data at boundaries.`,
-        };
-      } else {
-        raw = {
-          questionText: `Which approach is the most effective when using ${cleanTopic}?`,
-          assessmentFormat: 'scenario_based',
-          payload: {
-            scenario: `You are creating a simple program that tracks items and scores for ${cleanTopic}. You need a clear and reliable way to store and update values as the user interacts with the app.`,
-            options: [
-              `Use clear, properly named variables and functions tailored for ${cleanTopic}`,
-              `Store all data in uninitialized random variables without checking`,
-              `Avoid storing any values and hardcode fixed numbers everywhere`,
-              `Restart the entire computer whenever an update is needed`,
-            ],
-            hint: `Think about how ${cleanTopic} helps organize and keep track of information cleanly.`,
-          },
-          evaluationData: {
-            bestChoice: `Use clear, properly named variables and functions tailored for ${cleanTopic}`,
-            tradeoffs: `Using clear variables and functions ensures that ${cleanTopic} is reliable and easy to read.`,
-          },
-          explanation: `Core Reasoning: In programming, clear and well-organized code is easy to understand, test, and maintain.\nMisconception Avoided: Trying to take shortcuts with uninitialized variables.\nStudent Pro-Tip: Keep variable names descriptive so anyone reading your code understands what it does.`,
-        };
-      }
-      break;
-
-    case 'mcq':
-    default:
-      if (variant === 1) {
-        raw = {
-          questionText: `Which of the following best describes how ${cleanTopic} operates?`,
-          assessmentFormat: 'mcq',
-          payload: {
-            options: [
-              `It follows clear, sequential logic to process and maintain state for ${cleanTopic}`,
-              `It randomly alters memory without any deterministic rules`,
-              `It deletes files from the operating system`,
-              `It only works if the computer is disconnected from the internet`,
-            ],
-            hint: `Consider how programming logic is deterministic and predictable.`,
-          },
-          evaluationData: {
-            correctAnswer: `It follows clear, sequential logic to process and maintain state for ${cleanTopic}`,
-          },
-          explanation: `Core Reasoning: ${cleanTopic} uses predictable programming rules to process data step-by-step.\nMisconception Avoided: Thinking computers make arbitrary or random decisions.\nStudent Pro-Tip: Code executes sequentially, one instruction at a time.`,
-        };
-      } else if (variant === 2) {
-        raw = {
-          questionText: `When implementing ${cleanTopic}, what is the best practice for keeping code readable?`,
-          assessmentFormat: 'mcq',
-          payload: {
-            options: [
-              `Use descriptive variable names and single-responsibility functions`,
-              `Put all code on a single unformatted 10,000-character line`,
-              `Name all variables with single random letters like a, b, c, z`,
-              `Avoid writing any comments or functions`,
-            ],
-            hint: `Think about how code readability helps you and your teammates debug.`,
-          },
-          evaluationData: {
-            correctAnswer: `Use descriptive variable names and single-responsibility functions`,
-          },
-          explanation: `Core Reasoning: Clear names and focused functions make code self-documenting and easier to debug.\nMisconception Avoided: Thinking shorter variable names make programs run faster.\nStudent Pro-Tip: Name variables for what they contain, like userScore rather than s.`,
-        };
-      } else {
-        raw = {
-          questionText: `What is the main purpose of ${cleanTopic}?`,
-          assessmentFormat: 'mcq',
-          payload: {
-            options: [
-              `To store, organize, or process information step-by-step for ${cleanTopic}`,
-              `To randomly delete values without warning`,
-              `To make code impossible for humans to read or test`,
-              `To slow down computer execution intentionally`,
-            ],
-            hint: `Focus on how ${cleanTopic} helps write organized and predictable code.`,
-          },
-          evaluationData: {
-            correctAnswer: `To store, organize, or process information step-by-step for ${cleanTopic}`,
-          },
-          explanation: `Core Reasoning: ${cleanTopic} gives your program clear instructions to store and manage information reliably.\nMisconception Avoided: Confusing technical syntax with the simple goal of organizing data.\nStudent Pro-Tip: Always think of what problem the code is solving step-by-step.`,
-        };
-      }
-      break;
+  } catch (err) {
+    console.error('getAdaptiveFallbackQuestion error, using basic fallback:', err.message);
   }
 
-  return validateAndNormaliseQuestion(raw, spec);
+  // Graceful fallback if bank throws unexpectedly
+  const { topic, difficulty = 'normal', bloomLevel = 'understand', assessmentFormat = 'mcq' } = spec;
+  const cleanTopic = (topic || 'this concept').trim();
+  const basicRaw = {
+    questionText: `Which of the following best describes how ${cleanTopic} operates in a software application?`,
+    assessmentFormat: 'mcq',
+    payload: {
+      options: [
+        `It processes instructions and maintains predictable state for ${cleanTopic}`,
+        `It randomly modifies system memory without rules`,
+        `It halts the operating system kernel immediately`,
+        `It deletes files from disk without verification`,
+      ],
+      hint: `Think of how ${cleanTopic} organizes and executes programmatic logic predictably.`,
+    },
+    evaluationData: {
+      correctAnswer: `It processes instructions and maintains predictable state for ${cleanTopic}`,
+    },
+    explanation: `Core Reasoning: In software engineering, ${cleanTopic} provides predictable, deterministic execution.\nStudent Pro-Tip: Trace operations step-by-step.`,
+  };
+  return validateAndNormaliseQuestion(basicRaw, spec);
 }
 
 /**

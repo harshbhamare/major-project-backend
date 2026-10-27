@@ -403,7 +403,7 @@ const getNextLearningAction = async (studentId, moduleId, options = {}) => {
       contentStrategy,
       difficulty: (selectedTarget.index === 0 && selectedTarget.attempts < 2) ? 'easy' : policy.difficulty,
       bloomLevel: (selectedTarget.index === 0 && selectedTarget.attempts < 2) ? 'understand' : policy.bloom,
-      assessmentFormat: (selectedTarget.index === 0 && selectedTarget.attempts < 2) ? 'mcq' : format,
+      assessmentFormat: format,
       learningObjective,
       reason: `Progressive Step ${selectedTarget.index + 1}/${orderedTopics.length}: Focus on "${targetTopic.title}" before advancing to downstream topics.`,
       topicChain,
