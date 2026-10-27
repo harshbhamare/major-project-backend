@@ -176,6 +176,20 @@ const generateActivity = async (req, res) => {
       console.error('generateAdaptiveContent failed (non-fatal):', err.message);
     }
 
+    // Fetch previous questions for this topic to guarantee varied, non-repeating questions
+    const previousActivities = await AdaptiveActivity.find({
+      studentId,
+      topicId: plan.topicId,
+      'question.questionText': { $exists: true },
+    })
+      .sort({ createdAt: -1 })
+      .limit(8)
+      .select('question.questionText');
+
+    const previousQuestions = previousActivities
+      .map(a => a.question?.questionText)
+      .filter(Boolean);
+
     // Step 5 — Generate adaptive assessment question
     const assessmentSpec = {
       topic:             plan.topicTitle,
@@ -187,6 +201,8 @@ const generateActivity = async (req, res) => {
       contentStrategy:   plan.contentStrategy,
       mastery:           plan.mastery,
       trend:             plan.trend,
+      previousQuestions,
+      attemptNumber:     previousQuestions.length + 1,
     };
 
     let question = null;
