@@ -82,16 +82,28 @@ async function awardGamification(userId, { type, format, isCorrect, score = 0, p
       }
     }
   } else if (type === 'quiz') {
-    xpEarned = 50; // base quiz finish
-    if (percentage >= 90) xpEarned += 50; // Ace bonus
-    else if (percentage >= 70) xpEarned += 30;
-    else if (percentage >= 50) xpEarned += 15;
+    if (percentage === 0) {
+      xpEarned = 0; // 0% or all skipped gets 0 XP
+    } else if (percentage < 40) {
+      xpEarned = 10; // Effort XP for attempting
+    } else if (percentage < 70) {
+      xpEarned = 35; // Developing XP
+    } else if (percentage < 90) {
+      xpEarned = 60; // Proficient XP
+    } else {
+      xpEarned = 100; // Mastery Ace XP
+    }
   }
 
   user.xp = (user.xp || 0) + xpEarned;
 
-  // 2. Update Streak
-  const streak = updateStreak(user);
+  // 2. Update Streak (only increment streak if meaningful participation occurred)
+  let streak = user.streak || 1;
+  if (type !== 'quiz' || percentage > 0) {
+    streak = updateStreak(user);
+  } else {
+    user.lastActiveDate = new Date();
+  }
 
   // 3. Update Level
   const levelInfo = getLevelInfo(user.xp);

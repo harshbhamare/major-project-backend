@@ -28,19 +28,31 @@ const submitQuiz = async (req, res) => {
     let score = 0, totalMarks = 0;
     const weakTopicIds = new Set();
 
+    let attemptedCount = 0;
+    let skippedCount = 0;
+    let correctCount = 0;
+
     const processedAnswers = quiz.questions.map((q) => {
       const studentAnswer = answers.find(a => a.questionId === q._id.toString());
-      const isCorrect = studentAnswer?.selectedAnswer === q.correctAnswer;
+      const selected = (studentAnswer?.selectedAnswer ?? '').toString().trim();
+      const isAttempted = selected.length > 0;
+      if (isAttempted) attemptedCount++;
+      else skippedCount++;
+
+      const isCorrect = isAttempted && selected === (q.correctAnswer ?? '').toString().trim();
       totalMarks += q.marks;
       if (isCorrect) {
         score += q.marks;
+        correctCount++;
       } else if (q.topicId) {
         weakTopicIds.add(q.topicId.toString());
       }
       return {
         questionId:     q._id,
-        selectedAnswer: studentAnswer?.selectedAnswer || '',
+        selectedAnswer: selected,
         isCorrect,
+        correctAnswer:  q.correctAnswer,
+        explanation:    q.explanation || '',
         topicId:        q.topicId,
         difficulty:     q.difficulty || 'normal',
       };
@@ -137,11 +149,20 @@ const submitQuiz = async (req, res) => {
 
     res.status(201).json({
       result,
+      stats: {
+        totalQuestions: quiz.questions.length,
+        attempted: attemptedCount,
+        skipped: skippedCount,
+        correct: correctCount,
+        incorrect: Math.max(0, attemptedCount - correctCount),
+      },
       feedback: {
         percentage,
         recommendedDifficulty,
         message:
-          percentage < 40
+          percentage === 0
+            ? 'Score: 0%. Most or all questions were skipped. Please review the material and retry.'
+            : percentage < 40
             ? 'Review the basics — easier content has been recommended.'
             : percentage <= 70
             ? 'Good effort! Keep practising at the current level.'

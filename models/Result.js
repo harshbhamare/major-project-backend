@@ -4,6 +4,8 @@ const answerSchema = new mongoose.Schema({
   questionId: { type: mongoose.Schema.Types.ObjectId },
   selectedAnswer: { type: String },
   isCorrect: { type: Boolean },
+  correctAnswer: { type: String },
+  explanation: { type: String },
   topicId: { type: mongoose.Schema.Types.ObjectId, ref: 'Topic' },
 });
 
