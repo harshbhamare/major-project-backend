@@ -20,6 +20,7 @@
  */
 
 const Module = require('../models/Module');
+const Topic  = require('../models/Topic');
 const {
   getKnowledgeGaps,
   getLearnerStateForModule,
@@ -123,50 +124,16 @@ function determineAutomatedFormat({
   const hasCompletionIntent = /syntax|variable|function|method|class|constructor|array|collection|list|map|set|structure|module|implement|definition|npm|file system|declare/i.test(combinedText);
   const hasScenarioIntent = /architecture|design|pattern|system|environment|project|production|scalability|security|lifecycle|real-world|application/i.test(combinedText);
 
-  let candidates = [];
+  // For a spoonfed, frictionless student experience, automated adaptive practice
+  // consistently uses 4-choice interactive question formats (MCQ, code tracing, scenario):
+  let candidates = ['mcq', 'code_tracing', 'scenario_based'];
 
   if (isAdvancement || mastery >= 0.80) {
-    // Advanced / Mastered tier (Bloom: Evaluate / Create)
-    if (hasScenarioIntent || module?.difficulty === 'advanced') {
-      candidates = ['scenario_based', 'debugging', 'code_completion'];
-    } else if (hasDebugIntent || isCodeModule) {
-      candidates = ['debugging', 'scenario_based', 'code_completion'];
-    } else {
-      candidates = ['scenario_based', 'short_answer', 'mcq'];
-    }
+    candidates = ['scenario_based', 'mcq', 'code_tracing'];
   } else if (mastery >= 0.65) {
-    // Upper developing tier (Bloom: Analyze)
-    if (hasDebugIntent) {
-      candidates = ['debugging', 'code_completion', 'code_tracing'];
-    } else if (hasTracingIntent) {
-      candidates = ['code_tracing', 'debugging', 'code_completion'];
-    } else if (hasCompletionIntent) {
-      candidates = ['code_completion', 'debugging', 'code_tracing'];
-    } else if (isCodeModule) {
-      candidates = ['debugging', 'code_completion', 'code_tracing', 'scenario_based'];
-    } else {
-      candidates = ['scenario_based', 'short_answer', 'mcq'];
-    }
-  } else if (mastery >= 0.40) {
-    // Developing tier (Bloom: Apply)
-    if (hasTracingIntent) {
-      candidates = ['code_tracing', 'code_completion', 'debugging'];
-    } else if (hasCompletionIntent) {
-      candidates = ['code_completion', 'code_tracing', 'debugging'];
-    } else if (hasDebugIntent) {
-      candidates = ['debugging', 'code_completion', 'code_tracing'];
-    } else if (isCodeModule) {
-      candidates = ['code_completion', 'code_tracing', 'debugging', 'mcq'];
-    } else {
-      candidates = ['short_answer', 'mcq', 'scenario_based'];
-    }
+    candidates = ['code_tracing', 'mcq', 'scenario_based'];
   } else {
-    // Foundational / Deep gap tier (Bloom: Understand)
-    if (isCodeModule) {
-      candidates = ['code_tracing', 'code_completion', 'mcq', 'short_answer'];
-    } else {
-      candidates = ['mcq', 'short_answer', 'scenario_based'];
-    }
+    candidates = ['mcq', 'code_tracing', 'scenario_based'];
   }
 
   // Declining trend scaffolding: prefer the most scaffolded candidate
@@ -271,248 +238,177 @@ const getNextLearningAction = async (studentId, moduleId, options = {}) => {
       return { hasGap: false, action: 'no_action', noActionReason: 'no_topics', reason: 'Module has no topics.' };
     }
 
-    const gaps = await getKnowledgeGaps(studentId, topicIds);
+    // Fetch learner state for all topics in this module
+    const stateMap = await getLearnerStateForModule(studentId, topicIds);
 
-    // If learner requested practice for a specific topic (e.g. from ModuleView)
-    if (options.targetTopicId) {
-      const targetedTopic = module.topics.find(t => t._id.toString() === options.targetTopicId.toString());
-      if (targetedTopic) {
-        const stateMap = await getLearnerStateForModule(studentId, [targetedTopic._id]);
-        const record = stateMap[targetedTopic._id.toString()];
-        const mastery = record ? record.mastery : 0.5;
-        const trend = record?.trend || 'stable';
-        const policy = policyFor(mastery);
+    // Build ordered list of topics with learner progress
+    const orderedTopics = module.topics.map((t, index) => {
+      const r = stateMap[t._id.toString()];
+      const mastery = r ? r.mastery : 0.5;
+      const attempts = r ? r.attemptCount : 0;
+      const trend = r?.trend || 'stable';
+      const isMastered = attempts >= MIN_ATTEMPTS && mastery >= 0.80;
+      return {
+        topic: t,
+        topicId: t._id,
+        title: t.title,
+        order: index + 1,
+        index,
+        mastery,
+        attempts,
+        trend,
+        isMastered,
+        isProficient: mastery >= 0.65 && attempts >= 1,
+      };
+    });
 
-        const automated = determineAutomatedFormat({
-          module,
-          topic: targetedTopic,
-          mastery,
-          trend,
-          recentFormats: options.recentFormats || [],
-          isAdvancement: mastery >= 0.80,
-        });
-
-        const format = options.format || automated.format;
-        const learningObjective = buildObjective(targetedTopic.title, policy);
-
-        let contentStrategy = policy.content;
-        if (trend === 'declining' && mastery >= 0.40) {
-          contentStrategy = 'misconception_correction';
-        }
-
-        return {
-          hasGap:           true,
-          isAdvancement:    mastery >= 0.80,
-          action:           policy.action,
-          topicId:          targetedTopic._id,
-          topicTitle:       targetedTopic.title,
-          mastery:          Math.round(mastery * 100) / 100,
-          masteryState:     policy.state,
-          trend,
-          contentStrategy,
-          difficulty:       policy.difficulty,
-          bloomLevel:       policy.bloom,
-          assessmentFormat: format,
-          learningObjective,
-          reason:           options.format ? `Targeted practice for "${targetedTopic.title}".` : automated.reason,
-          allGaps: gaps.slice(0, 5).map(g => ({
-            topicId:    g.topicId?._id || g.topicId,
-            topicTitle: g.topicId?.title || '',
-            mastery:    Math.round(g.mastery * 100) / 100,
-            state:      g.state,
-            trend:      g.trend,
-          })),
-        };
+    // Determine unlocked threshold: student can access topics up to the first non-proficient topic + 1
+    let unlockedUntilIndex = 0;
+    for (let i = 0; i < orderedTopics.length; i++) {
+      if (orderedTopics[i].isProficient || orderedTopics[i].isMastered) {
+        unlockedUntilIndex = Math.min(i + 1, orderedTopics.length - 1);
+      } else {
+        break;
       }
     }
 
-    if (gaps.length === 0) {
-      // A topic is only "mastered" if it has reached MIN_ATTEMPTS AND mastery >= 0.80.
-      // If records exist but none have enough attempts, it's insufficient_data, not all_mastered.
-      const stateMap = await getLearnerStateForModule(studentId, topicIds);
-      const records = Object.values(stateMap);
+    // Check if entire module is mastered
+    const allMastered = orderedTopics.length > 0 && orderedTopics.every(t => t.isMastered);
 
-      // All topics must have MIN_ATTEMPTS interactions to be considered "mastered"
-      const allHaveEnoughAttempts = topicIds.length > 0 && topicIds.every(tid => {
-        const r = stateMap[tid.toString()];
-        return r && r.attemptCount >= MIN_ATTEMPTS;
-      });
-
-      // Check if every topic in the module is genuinely mastered (attemptCount >= MIN_ATTEMPTS and mastery >= 0.80)
-      const allMastered = allHaveEnoughAttempts &&
-        records.length === topicIds.length &&
-        records.every(r => r.mastery >= 0.80);
-
-      if (allMastered) {
-        // If allowAdvance is requested (or student is taking an adaptive activity on an all-mastered module),
-        // trigger the 'advance' strategy for the mastered topic with the lowest mastery or fewest attempts
-        if (options.allowAdvance) {
-          const sortedMastered = [...module.topics].map(t => {
-            const r = stateMap[t._id.toString()];
-            return {
-              topicId:    t._id,
-              topicTitle: t.title,
-              mastery:    r?.mastery ?? 0.85,
-              trend:      r?.trend || 'stable',
-              attempts:   r?.attemptCount || MIN_ATTEMPTS,
-            };
-          }).sort((a, b) => a.mastery - b.mastery || a.attempts - b.attempts);
-
-          const targetTopic = sortedMastered[0];
-          const policy = policyFor(targetTopic.mastery);
-
-          const automated = determineAutomatedFormat({
-            module,
-            topic: targetTopic,
-            mastery: targetTopic.mastery,
-            trend: targetTopic.trend,
-            recentFormats: options.recentFormats || [],
-            isAdvancement: true,
-          });
-
-          const format = options.format || automated.format;
-          const learningObjective = buildObjective(targetTopic.topicTitle, policy);
-
-          return {
-            hasGap:           true,
-            isAdvancement:    true,
-            action:           'advance',
-            topicId:          targetTopic.topicId,
-            topicTitle:       targetTopic.topicTitle,
-            mastery:          Math.round(targetTopic.mastery * 100) / 100,
-            masteryState:     'mastered',
-            trend:            targetTopic.trend,
-            contentStrategy:  policy.content,
-            difficulty:       policy.difficulty,
-            bloomLevel:       policy.bloom,
-            assessmentFormat: format,
-            learningObjective,
-            reason:           options.format
-              ? 'All module topics are mastered. Advancing with higher-order evaluation and challenge tasks.'
-              : automated.reason,
-            allGaps:          [],
-            noActionReason:   null,
-          };
-        }
-
-        return {
-          hasGap:         false,
-          action:         'no_action',
-          noActionReason: 'all_mastered',
-          reason:         'All assessed topics are at or above the mastery threshold.',
-          canAdvance:     true,
-        };
-      }
-
-      // Cold-start / Frictionless automated practice:
-      // If autoStart is requested (or during practice session generation),
-      // seamlessly initialize automated practice on the module's initial topic.
-      if (options.autoStart && module.topics.length > 0) {
-        const sortedTopics = [...module.topics].map(t => {
-          const r = stateMap[t._id.toString()];
-          return {
-            topic: t,
-            mastery: r?.mastery ?? 0.50,
-            trend: r?.trend || 'stable',
-            attempts: r?.attemptCount || 0,
-            difficulty: t.difficulty || module.difficulty || 'normal',
-          };
-        }).sort((a, b) => a.attempts - b.attempts || a.mastery - b.mastery);
-
-        const startTarget = sortedTopics[0];
-        const targetTopic = startTarget.topic;
-        const mastery = startTarget.mastery;
-        const trend = startTarget.trend;
-        const policy = policyFor(mastery);
-
+    if (allMastered && !options.targetTopicId) {
+      if (options.allowAdvance) {
+        // Advanced mastery challenge on the last or most complex topic
+        const target = orderedTopics[orderedTopics.length - 1];
+        const policy = policyFor(target.mastery);
         const automated = determineAutomatedFormat({
           module,
-          topic: targetTopic,
-          mastery,
-          trend,
+          topic: target.topic,
+          mastery: target.mastery,
+          trend: target.trend,
           recentFormats: options.recentFormats || [],
-          isAdvancement: false,
+          isAdvancement: true,
         });
-
         const format = options.format || automated.format;
-        const learningObjective = buildObjective(targetTopic.title, policy);
-
         return {
-          hasGap:           true,
-          isAdvancement:    false,
-          action:           policy.action,
-          topicId:          targetTopic._id,
-          topicTitle:       targetTopic.title,
-          mastery:          Math.round(mastery * 100) / 100,
-          masteryState:     policy.state,
-          trend,
-          contentStrategy:  policy.content,
-          difficulty:       policy.difficulty,
-          bloomLevel:       (format === 'debugging' || format === 'scenario_based') ? 'analyze' : policy.bloom,
+          hasGap: true,
+          isAdvancement: true,
+          action: 'advance',
+          topicId: target.topicId,
+          topicTitle: target.title,
+          sequenceIndex: target.index,
+          totalTopics: orderedTopics.length,
+          mastery: Math.round(target.mastery * 100) / 100,
+          masteryState: 'mastered',
+          trend: target.trend,
+          contentStrategy: 'advanced_practice',
+          difficulty: 'advanced',
+          bloomLevel: 'evaluate',
           assessmentFormat: format,
-          learningObjective,
-          reason:           options.format ? `Automated practice on ${targetTopic.title}.` : automated.reason,
-          allGaps:          [],
-          noActionReason:   null,
+          learningObjective: `Mastery Challenge: Analyze complex scenarios in "${target.title}"`,
+          reason: 'All foundational topics mastered! Ready for advanced application challenge.',
+          topicChain: orderedTopics.map(ot => ({
+            topicId: ot.topicId,
+            title: ot.title,
+            order: ot.order,
+            isUnlocked: true,
+            isCurrent: ot.index === target.index,
+            isMastered: true,
+            mastery: ot.mastery,
+          })),
+          allGaps: [],
+          noActionReason: null,
         };
       }
 
       return {
-        hasGap:         false,
-        action:         'no_action',
-        noActionReason: 'insufficient_data',
-        reason:         `Insufficient interaction data — at least ${MIN_ATTEMPTS} assessed interactions per topic are required before adaptive practice is available. Complete more quiz questions first.`,
+        hasGap: false,
+        action: 'no_action',
+        noActionReason: 'all_mastered',
+        reason: 'Congratulations! All topics in this module have reached the mastery threshold (≥80%).',
+        canAdvance: true,
+        topicChain: orderedTopics.map(ot => ({
+          topicId: ot.topicId,
+          title: ot.title,
+          order: ot.order,
+          isUnlocked: true,
+          isCurrent: false,
+          isMastered: true,
+          mastery: ot.mastery,
+        })),
       };
     }
 
-    // Take the highest-priority gap (already sorted by learnerModelService)
-    const topGap = gaps[0];
-    const mastery = topGap.mastery;
-    const policy  = policyFor(mastery);
-    const topicTitle = topGap.topicId?.title || 'Unknown Topic';
-    const targetTopic = module.topics.find(t => t._id.toString() === (topGap.topicId?._id || topGap.topicId).toString()) || topGap.topicId;
+    // ── Target Topic Selection (Progressive Ladder) ──────────────────────────
+    let selectedTarget = null;
+
+    if (options.targetTopicId) {
+      // Direct request from student (e.g. clicking a topic in the topic chain)
+      selectedTarget = orderedTopics.find(t => t.topicId.toString() === options.targetTopicId.toString());
+    }
+
+    if (!selectedTarget) {
+      // PROGRESSIVE CURRICULUM FLOW:
+      // Strictly select the EARLIEST topic in sequential order that has not yet reached mastery (≥ 0.80).
+      // This guarantees the student begins with Topic 1 (minute fundamentals) and progresses sequentially!
+      selectedTarget = orderedTopics.find(t => t.mastery < 0.80) || orderedTopics[0];
+    }
+
+    const targetTopic = selectedTarget.topic;
+    const mastery = selectedTarget.mastery;
+    const trend = selectedTarget.trend;
+    const policy = policyFor(mastery);
 
     const automated = determineAutomatedFormat({
       module,
       topic: targetTopic,
       mastery,
-      trend: topGap.trend,
+      trend,
       recentFormats: options.recentFormats || [],
-      isAdvancement: false,
+      isAdvancement: mastery >= 0.80,
     });
 
     const format = options.format || automated.format;
+    const learningObjective = buildObjective(targetTopic.title, policy);
 
-    // Override content strategy for declining trend
     let contentStrategy = policy.content;
-    if (topGap.trend === 'declining' && mastery >= 0.40) {
+    if (selectedTarget.attempts === 0 || mastery < 0.50) {
+      // Beginners always get step-by-step worked examples with simplified analogies
+      contentStrategy = 'worked_examples';
+    } else if (trend === 'declining' && mastery >= 0.40) {
       contentStrategy = 'misconception_correction';
     }
 
-    const learningObjective = buildObjective(topicTitle, policy);
+    const topicChain = orderedTopics.map(ot => ({
+      topicId: ot.topicId,
+      title: ot.title,
+      order: ot.order,
+      isUnlocked: true,
+      isCurrent: ot.topicId.toString() === targetTopic._id.toString(),
+      isMastered: ot.isMastered,
+      mastery: ot.mastery,
+      attempts: ot.attempts,
+    }));
 
     return {
-      hasGap:           true,
-      isAdvancement:    false,
-      action:           policy.action,
-      topicId:          topGap.topicId?._id || topGap.topicId,
-      topicTitle,
-      mastery:          Math.round(mastery * 100) / 100,
-      masteryState:     policy.state,
-      trend:            topGap.trend,
+      hasGap: true,
+      isAdvancement: mastery >= 0.80,
+      action: policy.action,
+      topicId: targetTopic._id,
+      topicTitle: targetTopic.title,
+      sequenceIndex: selectedTarget.index,
+      totalTopics: orderedTopics.length,
+      mastery: Math.round(mastery * 100) / 100,
+      masteryState: policy.state,
+      trend,
       contentStrategy,
-      difficulty:       policy.difficulty,
-      bloomLevel:       (format === 'debugging' || format === 'scenario_based') ? 'analyze' : policy.bloom,
-      assessmentFormat: format,
+      difficulty: (selectedTarget.index === 0 && selectedTarget.attempts < 2) ? 'easy' : policy.difficulty,
+      bloomLevel: (selectedTarget.index === 0 && selectedTarget.attempts < 2) ? 'understand' : policy.bloom,
+      assessmentFormat: (selectedTarget.index === 0 && selectedTarget.attempts < 2) ? 'mcq' : format,
       learningObjective,
-      reason:           options.format ? policy.reason : automated.reason,
-      allGaps: gaps.slice(0, 5).map(g => ({
-        topicId:    g.topicId?._id || g.topicId,
-        topicTitle: g.topicId?.title || '',
-        mastery:    Math.round(g.mastery * 100) / 100,
-        state:      g.state,
-        trend:      g.trend,
-      })),
+      reason: `Progressive Step ${selectedTarget.index + 1}/${orderedTopics.length}: Focus on "${targetTopic.title}" before advancing to downstream topics.`,
+      topicChain,
+      allGaps: [],
+      noActionReason: null,
     };
   } catch (err) {
     console.error('adaptationService error:', err.message);

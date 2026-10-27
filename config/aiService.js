@@ -26,7 +26,13 @@ function prepareText(rawText, maxChars = 6000) {
     .substring(0, maxChars);
 }
 
-async function callGemini(model, prompt, retries = 2) {
+let geminiCooldownUntil = 0;
+
+async function callGemini(model, prompt, retries = 1) {
+  if (Date.now() < geminiCooldownUntil) {
+    throw new Error('Gemini quota limit active. Using immediate fallback.');
+  }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const result = await model.generateContent(prompt);
@@ -35,10 +41,18 @@ async function callGemini(model, prompt, retries = 2) {
       const isRateLimit =
         err.status === 429 ||
         (err.message && err.message.includes('429')) ||
-        (err.message && err.message.toLowerCase().includes('quota'));
-      if (isRateLimit && attempt < retries) {
-        const waitMs = 5000 * Math.pow(2, attempt);
-        console.warn(`Gemini rate limit hit. Retrying in ${waitMs / 1000}s…`);
+        (err.message && err.message.toLowerCase().includes('quota')) ||
+        (err.message && err.message.toLowerCase().includes('retry in'));
+
+      if (isRateLimit) {
+        // Daily quota exhausted or severe rate limit — avoid long blocking sleeps
+        geminiCooldownUntil = Date.now() + 60000; // 60s cooldown
+        console.warn('Gemini quota limit reached; activating immediate fallback mode.');
+        throw err;
+      }
+
+      if (attempt < retries) {
+        const waitMs = 1500 * (attempt + 1);
         await new Promise((res) => setTimeout(res, waitMs));
         continue;
       }
@@ -279,6 +293,154 @@ function generateFallbackQuestions(topicTitle, topicSummary, count) {
  * @param {string} topicSummary — existing topic summary for context
  * @param {string} userId
  */
+/**
+ * Helper: Build rich fallback animation steps for any programming topic.
+ * Ensures the student always receives an interactive visual walkthrough.
+ */
+function buildDefaultAnimation(topicTitle = '', isBeginner = true) {
+  const t = topicTitle.toLowerCase();
+
+  if (/loop|range|iteration|for\b|while\b/i.test(t)) {
+    return {
+      type: 'iteration_loop',
+      conceptTitle: `Looping through Steps in ${topicTitle}`,
+      description: 'See how the computer repeats an action step-by-step until the condition is met.',
+      steps: [
+        {
+          step: 1,
+          title: 'Start the Counter',
+          description: 'We initialize our counter variable i at 0. The loop checks: is i < 3? Yes (0 < 3)!',
+          codeLine: 'for (let i = 0; i < 3; i++)',
+          visualState: { counter: 0, condition: '0 < 3 (TRUE)', action: 'Entering loop body', itemsProcessed: [] },
+        },
+        {
+          step: 2,
+          title: 'First Lap: Process Item',
+          description: 'The code inside runs for item 0. Then i increases from 0 to 1.',
+          codeLine: '  console.log("Processed: " + i);',
+          visualState: { counter: 1, condition: '1 < 3 (TRUE)', action: 'Printed item 0, incremented i to 1', itemsProcessed: ['Item 0'] },
+        },
+        {
+          step: 3,
+          title: 'Second Lap: Repeat',
+          description: 'The loop repeats for item 1. It checks 1 < 3 (True), runs, and increments i to 2.',
+          codeLine: '  console.log("Processed: " + i);',
+          visualState: { counter: 2, condition: '2 < 3 (TRUE)', action: 'Printed item 1, incremented i to 2', itemsProcessed: ['Item 0', 'Item 1'] },
+        },
+        {
+          step: 4,
+          title: 'Final Lap & Exit',
+          description: 'The loop runs for item 2. Then i becomes 3. 3 < 3 is FALSE, so the loop gracefully finishes!',
+          codeLine: '// Loop ends when condition is false',
+          visualState: { counter: 3, condition: '3 < 3 (FALSE)', action: 'Loop finished successfully!', itemsProcessed: ['Item 0', 'Item 1', 'Item 2'] },
+        },
+      ],
+    };
+  }
+
+  if (/if|else|condition|when|switch|logic|branch/i.test(t)) {
+    return {
+      type: 'flow_diagram',
+      conceptTitle: `Decision Making in ${topicTitle}`,
+      description: 'See how the computer tests a condition and chooses which road to take.',
+      steps: [
+        {
+          step: 1,
+          title: 'Inspect the Input',
+          description: 'We have a variable: let score = 85. The program arrives at the decision gate.',
+          codeLine: 'let score = 85;',
+          visualState: { inputVal: 'score = 85', gate: 'Is score >= 50?', activePath: 'evaluating' },
+        },
+        {
+          step: 2,
+          title: 'Evaluate the Question',
+          description: 'Computer checks: Is 85 greater than or equal to 50? Yes! The answer is TRUE.',
+          codeLine: 'if (score >= 50) {',
+          visualState: { inputVal: 'score = 85', gate: '85 >= 50 -> TRUE', activePath: 'true_branch' },
+        },
+        {
+          step: 3,
+          title: 'Take the TRUE Road',
+          description: 'The program enters the if-block and runs the success action, skipping the else-block entirely!',
+          codeLine: '  console.log("Passed!");\n}',
+          visualState: { inputVal: 'score = 85', gate: 'TRUE Branch Taken', activePath: 'output', output: '"Passed!"' },
+        },
+      ],
+    };
+  }
+
+  if (/function|method|call|execution|structure|entry/i.test(t)) {
+    return {
+      type: 'code_execution',
+      conceptTitle: `Function & Execution Flow: ${topicTitle}`,
+      description: 'Watch how inputs flow into a function and return an output.',
+      steps: [
+        {
+          step: 1,
+          title: 'Define the Blueprint',
+          description: 'A function is like a recipe card waiting to be used with specific inputs.',
+          codeLine: 'function greet(name) {',
+          visualState: { stage: 'Function Defined', stack: ['main()'], input: 'name parameter' },
+        },
+        {
+          step: 2,
+          title: 'Call the Function with Data',
+          description: 'We call greet("Alex"). The value "Alex" flows into the "name" slot.',
+          codeLine: 'greet("Alex");',
+          visualState: { stage: 'Calling greet("Alex")', stack: ['main()', 'greet("Alex")'], input: 'name = "Alex"' },
+        },
+        {
+          step: 3,
+          title: 'Produce the Result',
+          description: 'The function builds the greeting message and hands it back to the caller.',
+          codeLine: '  return "Hello, " + name + "!";',
+          visualState: { stage: 'Returning Result', stack: ['main()'], output: '"Hello, Alex!"' },
+        },
+      ],
+    };
+  }
+
+  // Default: Memory & Variable Box Animation
+  return {
+    type: 'box_memory',
+    conceptTitle: `Storage & State: ${topicTitle}`,
+    description: 'Watch how the computer creates labeled storage and stores data inside.',
+    steps: [
+      {
+        step: 1,
+        title: 'Create the Storage Box',
+        description: 'The computer reserves a memory slot and labels it with our variable name.',
+        codeLine: 'let userScore;',
+        visualState: { boxLabel: 'userScore', boxValue: '(empty)', action: 'Box created in memory' },
+      },
+      {
+        step: 2,
+        title: 'Drop Value Inside (= Assignment)',
+        description: 'The = symbol acts as the delivery worker, placing the value 100 into the box.',
+        codeLine: 'userScore = 100;',
+        visualState: { boxLabel: 'userScore', boxValue: '100', action: 'Value 100 placed inside box' },
+      },
+      {
+        step: 3,
+        title: 'Read / Update the Box',
+        description: 'Anytime we use userScore, the computer opens the box and reads the number 100.',
+        codeLine: 'console.log(userScore + 20); // prints 120',
+        visualState: { boxLabel: 'userScore', boxValue: '100', action: 'Read 100 + 20 = 120' },
+      },
+    ],
+  };
+}
+
+/**
+ * generateAdaptiveContent(plan, topicSummary, userId)
+ *
+ * Generates clear, beginner-friendly, jargon-free teaching content with
+ * everyday real-world analogies and animated visual steps.
+ *
+ * @param {object} plan
+ * @param {string} topicSummary
+ * @param {string} userId
+ */
 const generateAdaptiveContent = async (plan, topicSummary, userId) => {
   const {
     topicTitle, mastery, contentStrategy, difficulty, bloomLevel, trend,
@@ -286,55 +448,74 @@ const generateAdaptiveContent = async (plan, topicSummary, userId) => {
 
   const model = genAI.getGenerativeModel({
     model: GEMINI_MODEL,
-    generationConfig: { temperature: 0.4, topK: 40, topP: 0.9 },
+    generationConfig: { temperature: 0.35, topK: 40, topP: 0.9 },
   });
 
   const isBeginner = (difficulty === 'easy' || mastery < 0.60);
 
-  // Strategy-specific instructions (spec §12)
-  const strategyInstructions = {
-    worked_examples: isBeginner
-      ? 'START FROM SCRATCH: Explain what a variable is using a simple everyday analogy (like a labeled box). Show step-by-step how to declare a variable with let/const and assign a value using the = operator. Show 1-2 very simple, plain code examples (e.g. let score = 10;).'
-      : 'Provide 2 clear, concrete worked examples with step-by-step reasoning. Show the student the inner thought process: why we start here, what decisions are made at each step, and how to verify the result.',
-    remedial_explanation: isBeginner
-      ? 'START FROM SCRATCH: Explain what assigning a variable means in simple, friendly, conversational language. Use an everyday analogy (e.g., storing an item in a labeled jar). Break down: 1) the variable name, 2) the assignment operator =, and 3) the value stored. Avoid jargon.'
-      : 'Give a friendly, plain-language explanation that builds strong foundational intuition. Use an everyday relatable analogy. Avoid dry academic definitions and jargon.',
-    misconception_correction:
-      'Directly address the most common trap or misunderstanding on this topic (such as confusing the assignment operator = with mathematical equality ==). Explain why this mistake seems tempting, demonstrate why it leads to errors/bugs, and clarify the correct mental model.',
-    targeted_practice:
-      'Provide a concise conceptual refresher followed by 2 guided practice scenarios the student can work through themselves to build confidence.',
-    advanced_practice:
-      'Focus on real-world engineering trade-offs, performance implications, and edge cases to help the student progress toward deep mastery.',
-  };
+  const prompt = `You are a warm, engaging, world-class programming tutor teaching a student who finds technical jargon intimidating.
+Your goal is to explain this specific concept in CRYSTAL CLEAR, SIMPLE, EVERYDAY WORDS with an interactive animated visual breakdown.
 
-  const instruction = strategyInstructions[contentStrategy] || strategyInstructions.remedial_explanation;
-
-  const prompt = `You are an empathetic, world-class programming teacher helping a student master a concept.
-Adopt an encouraging, supportive, and crystal-clear pedagogical tone.
-${isBeginner ? 'IMPORTANT: The student is a BEGINNER. Teach from scratch! Focus on fundamentals (what variables are, how assignment works with =). Keep explanations simple, calm, and free of complicated terminology.' : ''}
+CRITICAL PEDAGOGY RULES:
+1. BAN JARGON: Do NOT use heavy academic words or enterprise buzzwords (e.g. no "distributed systems", "polymorphic invariants", "latency SLAs", "encapsulation patterns"). Use plain, friendly English.
+2. EVERYDAY ANALOGY: Compare the concept to something familiar (a labeled kitchen jar, a toy train, a playlist, a recipe card, a checklist).
+3. LASER-FOCUSED ON MINUTE TOPIC: Focus strictly on "${topicTitle}". Start from the absolute simplest building blocks.
+4. ANIMATION STEPS: Provide 3 to 4 sequential visual animation steps that explain what happens inside the computer step-by-step.
 
 STUDENT CONTEXT:
-- Topic: ${topicTitle}
-- Current mastery: ${Math.round(mastery * 100)}% (${mastery < 0.4 ? 'needs foundational scaffolding' : mastery < 0.7 ? 'reinforcing intermediate concepts' : 'ready for advanced depth'})
-- Performance trend: ${trend}
-- Target cognitive level: ${bloomLevel}
-- Difficulty: ${difficulty}
-- Content strategy: ${contentStrategy}
-
-EXISTING TOPIC CONTEXT:
-${(topicSummary || '').substring(0, 450)}
-
-PEDAGOGICAL TASK:
-${instruction}
+- Concept: ${topicTitle}
+${topicSummary ? `- Course Reference Material: ${topicSummary.slice(0, 1500)}` : ''}
+- Learner Stage: ${isBeginner ? 'Foundational (teach clearly with gentle steps)' : 'Reinforcement (practical clarity)'}
+- Focus: Practical understanding, real intuition, and zero confusing jargon
 
 Return ONLY a valid JSON object without markdown fences:
 {
-  "headline": "Encouraging, clear headline for this learning moment (max 8 words)",
-  "explanation": "Supportive 3-5 sentence explanation targeting the student's level with relatable intuition.",
-  "workedExample": "A realistic, step-by-step walkthrough showing the thinking process clearly. Null if not applicable.",
-  "practicePrompt": "An actionable self-reflection or practice question for the student. Null if not applicable.",
-  "keyInsight": "One memorable, high-impact golden rule the student can always remember (1 sentence).",
-  "misconceptionAddressed": "Explicitly identify the common trap/mistake this clears up. Null if not applicable."
+  "headline": "Friendly headline (max 7 words, e.g. Understanding Variables in Simple Steps)",
+  "analogy": "A memorable 1-2 sentence real-world analogy (e.g. Think of a variable like a labeled storage box...)",
+  "explanation": "Clear, friendly explanation in 2-3 short, calm sentences that build natural intuition.",
+  "animation": {
+    "type": "${/loop/i.test(topicTitle) ? 'iteration_loop' : /if|condition/i.test(topicTitle) ? 'flow_diagram' : /function/i.test(topicTitle) ? 'code_execution' : 'box_memory'}",
+    "conceptTitle": "${topicTitle}",
+    "description": "Short 1-sentence summary of what this animation demonstrates.",
+    "steps": [
+      {
+        "step": 1,
+        "title": "Short title of step 1",
+        "description": "Plain English description of what happens at this step.",
+        "codeLine": "1 line of simple code",
+        "visualState": {
+          "boxLabel": "name",
+          "boxValue": "value",
+          "action": "action taking place"
+        }
+      },
+      {
+        "step": 2,
+        "title": "Short title of step 2",
+        "description": "Plain English description of what happens at this step.",
+        "codeLine": "1 line of simple code",
+        "visualState": {
+          "boxLabel": "name",
+          "boxValue": "updated value",
+          "action": "action taking place"
+        }
+      },
+      {
+        "step": 3,
+        "title": "Short title of step 3",
+        "description": "Plain English description of the final result.",
+        "codeLine": "1 line of simple code",
+        "visualState": {
+          "boxLabel": "name",
+          "boxValue": "final result",
+          "action": "action taking place"
+        }
+      }
+    ]
+  },
+  "workedExample": "Clean, simple 2-4 line code walkthrough with beginner-friendly comments.",
+  "keyInsight": "One golden rule the student will always remember (1 short sentence).",
+  "misconceptionAddressed": "One common beginner trap and how to easily avoid it."
 }`;
 
   const t0 = Date.now();
@@ -347,25 +528,26 @@ Return ONLY a valid JSON object without markdown fences:
     if (!match) throw new Error('No JSON object in adaptive content response');
     const parsed = JSON.parse(match[0]);
 
-    // Sanitise every field to a plain string — Gemini sometimes returns nested objects
     const toStr = (v) => {
       if (!v || v === null) return null;
       if (typeof v === 'string') return v.trim() || null;
       if (typeof v === 'object') {
-        // Flatten { title, steps } or any nested object to a readable string
         return Object.entries(v)
-          .map(([k, val]) => {
-            if (Array.isArray(val)) return `${k}:\n${val.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`;
-            return `${k}: ${val}`;
-          })
+          .map(([k, val]) => Array.isArray(val) ? `${k}:\n${val.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}` : `${k}: ${val}`)
           .join('\n');
       }
       return String(v).trim() || null;
     };
 
+    const anim = (parsed.animation && typeof parsed.animation === 'object' && Array.isArray(parsed.animation.steps) && parsed.animation.steps.length > 0)
+      ? parsed.animation
+      : buildDefaultAnimation(topicTitle, isBeginner);
+
     return {
-      headline:               toStr(parsed.headline),
+      headline:               toStr(parsed.headline) || `Mastering ${topicTitle}`,
+      analogy:                toStr(parsed.analogy) || `Think of ${topicTitle} like a clear, step-by-step set of instructions.`,
       explanation:            toStr(parsed.explanation),
+      animation:              anim,
       workedExample:          toStr(parsed.workedExample),
       practicePrompt:         toStr(parsed.practicePrompt),
       keyInsight:             toStr(parsed.keyInsight),
@@ -373,25 +555,19 @@ Return ONLY a valid JSON object without markdown fences:
     };
   } catch (err) {
     await logUsage({ userId, operation: 'generate_quiz', inputChars: prompt.length, outputChars: 0, success: false, error: err.message, durationMs: Date.now() - t0 });
-    console.error('generateAdaptiveContent error:', err.message);
-    // Return a safe fallback so the UI doesn't break
-    if (isBeginner) {
-      return {
-        headline:                `Start from Scratch: Understanding ${topicTitle}`,
-        explanation:             `In programming, a variable is like a labeled storage container. When you assign a variable (e.g. let score = 10;), you store a value inside that container so you can use it later. The '=' symbol is the assignment operator that stores the value into the variable.`,
-        workedExample:           `// 1. Declare and assign a variable:\nlet age = 20;\n\n// 2. The variable 'age' now holds the number 20:\nconsole.log(age); // prints 20`,
-        practicePrompt:          `Try creating a variable named 'score' and assigning it the number 50.`,
-        keyInsight:              `The '=' sign assigns the value on the right to the variable on the left.`,
-        misconceptionAddressed:  `The '=' sign in programming is an assignment action, not a test for equality!`,
-      };
-    }
+    console.error('generateAdaptiveContent error (falling back to structured beginner guide):', err.message);
+
+    const defaultAnim = buildDefaultAnimation(topicTitle, isBeginner);
+
     return {
-      headline:                `Review: ${topicTitle}`,
-      explanation:             `Let's revisit the core concept of ${topicTitle}. Focus on understanding the fundamentals before moving forward.`,
-      workedExample:           null,
-      practicePrompt:          `Try to explain ${topicTitle} in your own words. What is its primary purpose?`,
-      keyInsight:              `Understanding ${topicTitle} is essential before progressing to more advanced material.`,
-      misconceptionAddressed:  null,
+      headline:                `Easy Guide: Understanding ${topicTitle}`,
+      analogy:                 `Think of ${topicTitle} like a labeled storage container on your desk — you give it a clear name so you can put something inside and find it easily later.`,
+      explanation:             `In programming, ${topicTitle} gives your computer clear instructions. Instead of memorizing complicated rules, focus on what the code is doing: setting up data, changing it, or checking a condition.`,
+      animation:               defaultAnim,
+      workedExample:           `// Simple step-by-step example:\nlet item = "Learning";\nconsole.log(item); // prints "Learning"`,
+      practicePrompt:          `Can you describe in your own words what happens when this step runs?`,
+      keyInsight:              `Keep it simple: variables hold data, and functions do actions with that data.`,
+      misconceptionAddressed:  `Don't worry about memorizing syntax — focus on the step-by-step mental picture!`,
     };
   }
 };
@@ -521,23 +697,24 @@ Produce structured "payload" with buggyCode/errorDescription/hint, and "evaluati
   },
 
   scenario_based: {
-    taskDescription: `Write one scenario-based question.
-Describe a realistic, concrete situation where the student must apply the concept.
+    taskDescription: `Write one student-friendly scenario-based question.
+Describe a simple, realistic, concrete situation (such as a student grade tracker, a game character score, or a simple shopping cart) where the student must choose the best way to apply the concept.
+Keep sentences short, clear, and free of enterprise jargon.
 Include a helpful non-spoiling "hint" in payload.
 Produce structured "payload" with scenario/options/hint, and "evaluationData" with bestChoice and tradeoffs.`,
     responseShape: `{
-  "questionText": "Which architectural decision best balances performance and reliability in this scenario?",
+  "questionText": "Which approach is best in this situation?",
   "assessmentFormat": "scenario_based",
   "payload": {
-    "scenario": "You are designing an architecture around [concept] for a distributed service handling high write volume with strict latency SLAs.",
-    "options": ["Best approach with brief rationale", "Plausible but suboptimal approach", "Incorrect approach reflecting misconception", "Irrelevant approach"],
-    "hint": "Consider which option prevents data loss or cascading errors while maintaining low latency."
+    "scenario": "You are writing a simple game where a player earns stars by finishing levels. You need to keep track of the total star count as they play.",
+    "options": ["Store the star count in an updatable variable so it can increase with each level", "Hardcode a fixed number that never changes", "Create a new unconnected variable for every single star", "Store the stars as plain text without counting"],
+    "hint": "Think about whether the star count needs to change and update as the player finishes levels."
   },
   "evaluationData": {
-    "bestChoice": "Best approach with brief rationale",
-    "tradeoffs": "Why the best choice balances fault tolerance and performance."
+    "bestChoice": "Store the star count in an updatable variable so it can increase with each level",
+    "tradeoffs": "An updatable variable allows the total to grow dynamically as the player makes progress."
   },
-  "explanation": "Why this is the best choice in this specific scenario and what trade-offs the other options miss."
+  "explanation": "Using an updatable variable is the ideal way to keep a running total that changes over time."
 }`,
   },
 };
@@ -795,19 +972,19 @@ function generateFallbackAdaptiveQuestion(spec) {
   switch (assessmentFormat) {
     case 'short_answer':
       raw = {
-        questionText: `Explain the fundamental concept of ${cleanTopic} and how it satisfies the objective: "${learningObjective || cleanTopic}".`,
+        questionText: `In simple words, what is ${cleanTopic} and why do we use it?`,
         assessmentFormat: 'short_answer',
         payload: {
-          placeholder: `Explain the fundamental concept of ${cleanTopic} in 1-3 sentences...`,
-          suggestedLength: '1-3 sentences',
-          context: `Target topic: ${cleanTopic}`,
-          hint: `Focus on why ${cleanTopic} is used, its core mechanism, and how it solves the learning objective.`,
+          placeholder: `Explain what ${cleanTopic} does in 1-2 simple sentences...`,
+          suggestedLength: '1-2 sentences',
+          context: `Topic: ${cleanTopic}`,
+          hint: `Think about what ${cleanTopic} helps the computer remember or do.`,
         },
         evaluationData: {
-          modelAnswer: `${cleanTopic} addresses this objective by applying core principles, proper encapsulation, and targeted state management.`,
-          keywords: [cleanTopic.toLowerCase(), 'principles', 'encapsulation', 'state'],
+          modelAnswer: `${cleanTopic} helps a program organize data and perform step-by-step actions clearly.`,
+          keywords: [cleanTopic.toLowerCase(), 'store', 'organize', 'action', 'data', 'step'],
         },
-        explanation: `Core Reasoning: A strong answer identifies the purpose of ${cleanTopic} and demonstrates how its mechanics satisfy "${learningObjective || cleanTopic}".\nMisconception Avoided: Confusing high-level buzzwords with actual operational mechanisms.\nStudent Pro-Tip: Link the concept directly to its practical outcome rather than merely stating a dictionary definition.`,
+        explanation: `Core Reasoning: A good explanation explains the purpose of ${cleanTopic} using simple, natural words.\nMisconception Avoided: Trying to memorize complex jargon instead of the simple idea.\nStudent Pro-Tip: Explain it as if you were teaching a friend who is new to computers.`,
       };
       break;
 
@@ -886,44 +1063,44 @@ function generateFallbackAdaptiveQuestion(spec) {
 
     case 'scenario_based':
       raw = {
-        questionText: `Which architectural decision best balances performance and reliability for ${cleanTopic}?`,
+        questionText: `Which approach is the most effective when using ${cleanTopic}?`,
         assessmentFormat: 'scenario_based',
         payload: {
-          scenario: `Scenario: You are designing a production system around ${cleanTopic}. The service handles concurrent requests and requires strict failure isolation.`,
+          scenario: `You are creating a simple program that tracks items and scores for ${cleanTopic}. You need a clear and reliable way to store and update values as the user interacts with the app.`,
           options: [
-            `Apply ${cleanTopic} principles with targeted validation and boundary isolation.`,
-            `Disable error logging and assume ideal state conditions.`,
-            `Store all state in global unversioned variables without synchronization.`,
-            `Bypass validation to achieve minimal latency.`,
+            `Use clear, properly named variables and functions tailored for ${cleanTopic}`,
+            `Store all data in uninitialized random variables without checking`,
+            `Avoid storing any values and hardcode fixed numbers everywhere`,
+            `Restart the entire computer whenever an update is needed`,
           ],
-          hint: `Consider which choice isolates faults, validates inputs, and prevents cascading failure in a production environment.`,
+          hint: `Think about how ${cleanTopic} helps organize and keep track of information cleanly.`,
         },
         evaluationData: {
-          bestChoice: `Apply ${cleanTopic} principles with targeted validation and boundary isolation.`,
-          tradeoffs: `Boundary isolation and standard validation prevent cascading failures when applying ${cleanTopic}.`,
+          bestChoice: `Use clear, properly named variables and functions tailored for ${cleanTopic}`,
+          tradeoffs: `Using clear variables and functions ensures that ${cleanTopic} is reliable and easy to read.`,
         },
-        explanation: `Core Reasoning: In distributed systems, boundary isolation and strict input validation prevent errors from propagating across services.\nMisconception Avoided: Sacrificing error handling and state synchronization for false performance gains.\nStudent Pro-Tip: Production reliability always favors explicit boundary checks over unchecked optimistic execution.`,
+        explanation: `Core Reasoning: In programming, clear and well-organized code is easy to understand, test, and maintain.\nMisconception Avoided: Trying to take shortcuts with uninitialized variables.\nStudent Pro-Tip: Keep variable names descriptive so anyone reading your code understands what it does.`,
       };
       break;
 
     case 'mcq':
     default:
       raw = {
-        questionText: `Which of the following best describes the core principle of ${cleanTopic}?`,
+        questionText: `What is the main purpose of ${cleanTopic}?`,
         assessmentFormat: 'mcq',
         payload: {
           options: [
-            `Applying standard, structured methodologies designed for ${cleanTopic}.`,
-            `A common misconception that ignores the fundamental mechanics of ${cleanTopic}.`,
-            `An unrelated construct that does not address ${cleanTopic}.`,
-            `A deprecated pattern that violates modern design standards.`,
+            `To store, organize, or process information step-by-step for ${cleanTopic}`,
+            `To randomly delete values without warning`,
+            `To make code impossible for humans to read or test`,
+            `To slow down computer execution intentionally`,
           ],
-          hint: `Look for the option that emphasizes structured, standard principles rather than anti-patterns or shortcuts.`,
+          hint: `Focus on how ${cleanTopic} helps write organized and predictable code.`,
         },
         evaluationData: {
-          correctAnswer: `Applying standard, structured methodologies designed for ${cleanTopic}.`,
+          correctAnswer: `To store, organize, or process information step-by-step for ${cleanTopic}`,
         },
-        explanation: `Core Reasoning: This option correctly captures the foundational mechanism and structured application of ${cleanTopic}.\nMisconception Avoided: Choosing patterns that ignore core constraints or apply deprecated techniques.\nStudent Pro-Tip: Eliminate options that describe anti-patterns or bypass necessary checks.`,
+        explanation: `Core Reasoning: ${cleanTopic} gives your program clear instructions to store and manage information reliably.\nMisconception Avoided: Confusing technical syntax with the simple goal of organizing data.\nStudent Pro-Tip: Always think of what problem the code is solving step-by-step.`,
       };
       break;
   }
@@ -982,11 +1159,13 @@ TASK — ${assessmentFormat.toUpperCase()}:
 ${formatSpec.taskDescription}
 
 CRITICAL RULES:
-1. The question MUST be directly about "${topic}" — no generic filler.
-2. difficulty in your response MUST be "${difficulty}".
-3. bloomLevel in your response MUST be "${bloomLevel}".
-4. assessmentFormat in your response MUST be "${assessmentFormat}".
-5. Return ONLY the JSON object below. No markdown, no explanation outside the JSON.
+1. SIMPLICITY & NO JARGON: Use simple, everyday, friendly language. Absolutely NO enterprise or academic buzzwords (e.g. no "distributed systems", "cascading failures", "latency SLAs", "polymorphic invariants"). Keep scenarios and questions focused on simple, relatable examples (scores, games, students, shopping, recipes).
+2. LASER-FOCUSED ON "${topic}": The question MUST test the exact micro-concept of "${topic}". Do NOT ask questions about unrelated or advanced language features.
+3. PROGRESSIVE APPROPRIATENESS: Match the student difficulty (${difficulty}) and cognitive level (${bloomLevel}). For beginners, keep questions short, direct, and encouraging.
+4. difficulty in your response MUST be "${difficulty}".
+5. bloomLevel in your response MUST be "${bloomLevel}".
+6. assessmentFormat in your response MUST be "${assessmentFormat}".
+7. Return ONLY the JSON object below. No markdown, no explanation outside the JSON.
 
 RESPONSE SHAPE:
 ${formatSpec.responseShape}`;
@@ -1121,6 +1300,7 @@ module.exports = {
   generateAdaptiveContent,
   generateAdaptiveAssessment,
   generateFallbackAdaptiveQuestion,
+  buildDefaultAnimation,
   evaluateAdaptiveResponse,
   getTodayUsageCount,
   DAILY_LIMIT,

@@ -249,7 +249,63 @@ const generateActivity = async (req, res) => {
     res.status(201).json(buildClientActivity(activity));
 
   } catch (err) {
-    console.error('generateActivity error:', err.message);
+    console.error('generateActivity error, attempting emergency fallback activity:', err.message);
+    try {
+      const Module = require('../models/Module');
+      const moduleDoc = await Module.findById(req.params.moduleId).populate('topics', 'title summary difficulty');
+      const targetTid = req.query.topicId || req.body?.topicId;
+      const topic = (targetTid && moduleDoc?.topics?.find(t => t._id.toString() === targetTid.toString())) || moduleDoc?.topics?.[0];
+      if (topic) {
+        const fallbackPlan = {
+          hasGap: true,
+          action: 'practice',
+          topicId: topic._id,
+          topicTitle: topic.title,
+          currentMastery: 0.5,
+          targetMastery: 0.8,
+          difficulty: topic.difficulty || 'normal',
+          bloomLevel: 'understand',
+          contentStrategy: 'worked_example',
+          assessmentFormat: 'mcq',
+          learningObjective: `Understand the fundamental concepts of ${topic.title}`,
+          reason: `Practice session for ${topic.title}`,
+          topicChain: (moduleDoc?.topics || []).map(t => ({
+            topicId: t._id,
+            title: t.title,
+            mastery: 0.5,
+          })),
+        };
+        const contentResult = await generateAdaptiveContent(fallbackPlan, topic.summary || '', req.user._id).catch(() => null);
+        const question = await generateAdaptiveAssessment({
+          topic: fallbackPlan.topicTitle,
+          topicSummary: topic.summary || '',
+          learningObjective: fallbackPlan.learningObjective,
+          bloomLevel: 'understand',
+          difficulty: 'normal',
+          assessmentFormat: 'mcq',
+          contentStrategy: 'worked_example',
+        }, req.user._id).catch(() => null);
+
+        if (question) {
+          const emergencyActivity = await AdaptiveActivity.create({
+            studentId: req.user._id,
+            moduleId: req.params.moduleId,
+            topicId: topic._id,
+            plan: fallbackPlan,
+            content: contentResult,
+            assessmentFormat: question.assessmentFormat || 'mcq',
+            difficulty: 'normal',
+            bloomLevel: 'understand',
+            learningObjective: fallbackPlan.learningObjective,
+            question,
+            status: 'pending',
+          });
+          return res.status(201).json(buildClientActivity(emergencyActivity));
+        }
+      }
+    } catch (fallbackErr) {
+      console.error('Emergency activity creation failed:', fallbackErr.message);
+    }
     res.status(500).json({ message: 'Failed to generate adaptive activity: ' + err.message });
   }
 };
@@ -432,7 +488,18 @@ const submitActivity = async (req, res) => {
       return null;
     });
 
-    const isObjective = ['mcq', 'scenario_based'].includes(format) && Array.isArray(q.payload?.options || q.options) && (q.payload?.options || q.options).length >= 2;
+    const isObjective = ['mcq', 'scenario_based', 'code_tracing'].includes(format) || (Array.isArray(q.payload?.options || q.options) && (q.payload?.options || q.options).length >= 2);
+
+    const resolvedCorrectAnswer =
+      q.evaluationData?.correctAnswer ||
+      q.correctAnswer ||
+      q.evaluationData?.bestChoice ||
+      q.evaluationData?.expectedOutput ||
+      q.evaluationData?.correctCompletion ||
+      q.evaluationData?.fixedCode ||
+      q.evaluationData?.identifiedBug ||
+      q.evaluationData?.modelAnswer ||
+      '';
 
     res.json({
       isCorrect,
@@ -440,7 +507,7 @@ const submitActivity = async (req, res) => {
       evaluator:       evalResult.evaluator,
       evalFeedback:    evalResult.feedback,
       criteriaResults: evalResult.criteriaResults || [],
-      correctAnswer:   q.evaluationData?.correctAnswer || q.correctAnswer || '',
+      correctAnswer:   resolvedCorrectAnswer,
       explanation:     q.explanation || '',
       masteryBefore:   masteryUpdate?.before ?? null,
       masteryAfter:    masteryUpdate?.after  ?? null,

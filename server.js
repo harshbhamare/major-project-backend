@@ -13,7 +13,7 @@ const app = express();
 // ── Trust Vercel's proxy (required for express-rate-limit and req.ip) ─────────
 app.set('trust proxy', 1);
 
-// ── Connect DB (cached — safe for serverless) ─────────────────────────────────
+// ── Connect DB (cached — safe for serverless / auto-reconnect) ────────────────
 connectDB().catch(err => console.error('DB connect failed:', err.message));
 
 // ── Security headers ──────────────────────────────────────────────────────────
@@ -27,18 +27,24 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .map(o => o.trim())
   .filter(Boolean);
 
-if (process.env.NODE_ENV !== 'production') {
-  allowedOrigins.push('http://localhost:3000');
-}
+// Always allow local development origins
+allowedOrigins.push('http://localhost:3000', 'http://127.0.0.1:3000');
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (Postman, mobile, server-to-server)
+    // Allow requests with no origin (Postman, mobile apps, curl, server-to-server)
     if (!origin) return callback(null, true);
-    // If no allowed origins configured, permit everything (open during initial setup)
-    if (allowedOrigins.length === 0) return callback(null, true);
-    // Check against whitelist — never throw, just deny with null
+    // If wildcard '*' is in allowed origins, permit
+    if (allowedOrigins.includes('*')) return callback(null, true);
+    // Explicit whitelist match
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Automatically allow any Vercel deployment preview or production domain (.vercel.app)
+    try {
+      const url = new URL(origin);
+      if (url.hostname.endsWith('.vercel.app')) {
+        return callback(null, true);
+      }
+    } catch (_) {}
     return callback(null, false); // deny silently — browser shows CORS error, not 500
   },
   credentials: true,

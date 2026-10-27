@@ -8,6 +8,11 @@ const connectDB = async () => {
     return mongoose.connection;
   }
 
+  // Reset cached promise if connection is disconnected (readyState === 0)
+  if (mongoose.connection.readyState === 0) {
+    cachedPromise = null;
+  }
+
   // 2 = connecting (wait for in-flight connection)
   if (mongoose.connection.readyState === 2 && cachedPromise) {
     return cachedPromise;

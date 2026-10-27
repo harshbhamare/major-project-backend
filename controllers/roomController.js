@@ -39,10 +39,36 @@ const createRoom = async (req, res) => {
 const getMyRooms = async (req, res) => {
   try {
     const rooms = await Room.find({ createdBy: req.user._id })
-      .populate('members', 'name email')
-      .populate('modules', 'title status difficulty')
+      .populate('members', 'name email role xp level streak createdAt')
+      .populate('modules', 'title status difficulty topics')
       .sort({ createdAt: -1 });
-    res.json(rooms);
+
+    // Clean up any historical duplicate member IDs in rooms
+    const cleanedRooms = rooms.map(room => {
+      const roomObj = room.toObject ? room.toObject() : room;
+      const seen = new Set();
+      const uniqueMembers = [];
+      let hadDuplicates = false;
+
+      for (const m of (roomObj.members || [])) {
+        if (!m) continue;
+        const idStr = (m._id || m).toString();
+        if (!seen.has(idStr)) {
+          seen.add(idStr);
+          uniqueMembers.push(m);
+        } else {
+          hadDuplicates = true;
+        }
+      }
+
+      if (hadDuplicates) {
+        Room.updateOne({ _id: room._id }, { members: uniqueMembers.map(u => u._id || u) }).exec();
+      }
+      roomObj.members = uniqueMembers;
+      return roomObj;
+    });
+
+    res.json(cleanedRooms);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -52,17 +78,41 @@ const getMyRooms = async (req, res) => {
 const getRoom = async (req, res) => {
   try {
     const room = await Room.findById(req.params.id)
-      .populate('members', 'name email role')
+      .populate('members', 'name email role xp level streak createdAt')
       .populate('modules', 'title status difficulty topics')
       .populate('createdBy', 'name email');
     if (!room) return res.status(404).json({ message: 'Room not found.' });
 
-    const isOwner = room.createdBy._id.toString() === req.user._id.toString();
-    const isMember = room.members.some(m => m._id.toString() === req.user._id.toString());
+    const roomObj = room.toObject ? room.toObject() : room;
+
+    // Deduplicate members list to ensure only unique entries
+    const seen = new Set();
+    const uniqueMembers = [];
+    let hadDuplicates = false;
+    for (const m of (roomObj.members || [])) {
+      if (!m) continue;
+      const idStr = (m._id || m).toString();
+      if (!seen.has(idStr)) {
+        seen.add(idStr);
+        uniqueMembers.push(m);
+      } else {
+        hadDuplicates = true;
+      }
+    }
+
+    if (hadDuplicates) {
+      Room.updateOne({ _id: room._id }, { members: uniqueMembers.map(u => u._id || u) }).exec();
+    }
+    roomObj.members = uniqueMembers;
+
+    const isOwner = roomObj.createdBy._id?.toString() === req.user._id.toString() ||
+                    roomObj.createdBy?.toString() === req.user._id.toString();
+    const isMember = uniqueMembers.some(m => (m._id || m).toString() === req.user._id.toString());
     if (!isOwner && !isMember && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not a member of this room.' });
     }
-    res.json(room);
+
+    res.json(roomObj);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -176,20 +226,39 @@ const joinRoom = async (req, res) => {
     const code = (req.body.code || '').toUpperCase().trim();
     if (!code) return res.status(400).json({ message: 'Room code is required.' });
 
-    const room = await Room.findOne({ code, isActive: true })
-      .populate('modules', 'title status difficulty topics')
-      .populate('createdBy', 'name');
+    const room = await Room.findOne({ code, isActive: true });
     if (!room) return res.status(404).json({ message: 'Invalid or inactive room code.' });
 
+    const isOwner = room.createdBy.toString() === req.user._id.toString();
     const alreadyMember = room.members.some(m => m.toString() === req.user._id.toString());
-    const isOwner = room.createdBy._id.toString() === req.user._id.toString();
 
     if (!alreadyMember && !isOwner) {
-      room.members.push(req.user._id);
-      await room.save();
+      // Atomic $addToSet prevents race conditions / concurrent double additions
+      await Room.updateOne(
+        { _id: room._id },
+        { $addToSet: { members: req.user._id } }
+      );
     }
 
-    res.json({ room, alreadyMember });
+    const updatedRoom = await Room.findById(room._id)
+      .populate('modules', 'title status difficulty topics')
+      .populate('createdBy', 'name');
+
+    // Deduplicate members list to ensure client gets unique entries only
+    const roomObj = updatedRoom.toObject ? updatedRoom.toObject() : updatedRoom;
+    const seen = new Set();
+    const uniqueMembers = [];
+    for (const m of (roomObj.members || [])) {
+      if (!m) continue;
+      const idStr = (m._id || m).toString();
+      if (!seen.has(idStr)) {
+        seen.add(idStr);
+        uniqueMembers.push(m);
+      }
+    }
+    roomObj.members = uniqueMembers;
+
+    res.json({ room: roomObj, alreadyMember });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

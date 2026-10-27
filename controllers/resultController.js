@@ -1,5 +1,7 @@
 const Result              = require('../models/Result');
 const Quiz                = require('../models/Quiz');
+const Module              = require('../models/Module');
+const Topic               = require('../models/Topic');
 const LearnerKnowledge    = require('../models/LearnerKnowledge');
 const LearningInteraction = require('../models/LearningInteraction');
 const User                = require('../models/User');
@@ -238,21 +240,188 @@ const getStudentDashboard = async (req, res) => {
 
 // ─── Faculty ──────────────────────────────────────────────────────────────────
 
-// @desc  Faculty: get results for a module
+// ─── Helper: Compute comprehensive class & student analytics ──────────────────
+const computeResultsAnalytics = (results) => {
+  const totalStudents = new Set(results.map(r => r.studentId?._id?.toString()).filter(Boolean)).size;
+  const avgScore = results.length
+    ? Math.round(results.reduce((s, r) => s + (r.percentage || 0), 0) / results.length)
+    : 0;
+
+  // Score Distribution Buckets
+  const distribution = [
+    { range: '0-40%', label: 'Critical (<40%)', count: 0, color: '#ef4444' },
+    { range: '41-60%', label: 'Needs Help (41-60%)', count: 0, color: '#f59e0b' },
+    { range: '61-80%', label: 'Proficient (61-80%)', count: 0, color: '#3b82f6' },
+    { range: '81-100%', label: 'Mastered (81-100%)', count: 0, color: '#10b981' },
+  ];
+
+  results.forEach(r => {
+    const p = r.percentage || 0;
+    if (p <= 40) distribution[0].count++;
+    else if (p <= 60) distribution[1].count++;
+    else if (p <= 80) distribution[2].count++;
+    else distribution[3].count++;
+  });
+
+  // Group by Student for Comprehensive Student Status Profiles
+  const studentMap = new Map();
+  results.forEach(r => {
+    if (!r.studentId?._id) return;
+    const sId = r.studentId._id.toString();
+    if (!studentMap.has(sId)) {
+      studentMap.set(sId, {
+        student: r.studentId,
+        attempts: [],
+        weakTopicsMap: new Map(),
+      });
+    }
+    const entry = studentMap.get(sId);
+    entry.attempts.push({
+      _id: r._id,
+      quizTitle: r.quizId?.title || 'Quiz',
+      moduleTitle: r.moduleId?.title || 'Module',
+      score: r.score,
+      totalMarks: r.totalMarks,
+      percentage: r.percentage,
+      recommendedDifficulty: r.recommendedDifficulty,
+      date: r.createdAt,
+    });
+
+    (r.weakTopics || []).forEach(wt => {
+      if (!wt?._id) return;
+      const wtId = wt._id.toString();
+      if (!entry.weakTopicsMap.has(wtId)) {
+        entry.weakTopicsMap.set(wtId, { title: wt.title, count: 0 });
+      }
+      entry.weakTopicsMap.get(wtId).count++;
+    });
+  });
+
+  const students = Array.from(studentMap.values()).map(item => {
+    const sortedAttempts = item.attempts.sort((a, b) => new Date(a.date) - new Date(b.date));
+    const percentages = sortedAttempts.map(a => a.percentage);
+    const latestScore = percentages[percentages.length - 1] || 0;
+    const highestScore = Math.max(...percentages);
+    const avg = Math.round(percentages.reduce((a, b) => a + b, 0) / percentages.length);
+
+    let trend = 'stable';
+    if (percentages.length >= 2) {
+      const diff = percentages[percentages.length - 1] - percentages[0];
+      if (diff > 5) trend = 'improving';
+      else if (diff < -5) trend = 'declining';
+    }
+
+    let status = 'mastered';
+    if (avg < 60 || latestScore < 50) status = 'needs_intervention';
+    else if (avg < 80) status = 'developing';
+
+    return {
+      student: item.student,
+      totalAttempts: item.attempts.length,
+      latestScore,
+      highestScore,
+      averageScore: avg,
+      trend,
+      status,
+      weakTopics: Array.from(item.weakTopicsMap.values()),
+      recentAttempts: sortedAttempts.slice(-5).reverse(),
+      lastActive: sortedAttempts[sortedAttempts.length - 1]?.date,
+    };
+  });
+
+  // Sort students by status severity (needs_intervention first) then lowest avgScore
+  students.sort((a, b) => {
+    const order = { needs_intervention: 0, developing: 1, mastered: 2 };
+    if (order[a.status] !== order[b.status]) {
+      return order[a.status] - order[b.status];
+    }
+    return a.averageScore - b.averageScore;
+  });
+
+  // Frequency of Weak Topics across Class
+  const classWeakTopicsMap = new Map();
+  results.forEach(r => {
+    (r.weakTopics || []).forEach(wt => {
+      if (!wt?._id) return;
+      const id = wt._id.toString();
+      if (!classWeakTopicsMap.has(id)) {
+        classWeakTopicsMap.set(id, { topicId: id, title: wt.title, count: 0 });
+      }
+      classWeakTopicsMap.get(id).count++;
+    });
+  });
+
+  const weakTopicsRanking = Array.from(classWeakTopicsMap.values())
+    .sort((a, b) => b.count - a.count);
+
+  // Timeline Data for Trend Visualization
+  const timelineData = results
+    .slice(0, 30)
+    .reverse()
+    .map(r => ({
+      date: new Date(r.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+      score: r.percentage,
+      student: r.studentId?.name || 'Student',
+    }));
+
+  return {
+    results,
+    totalStudents,
+    avgScore,
+    distribution,
+    students,
+    weakTopicsRanking,
+    timelineData,
+    atRiskCount: students.filter(s => s.status === 'needs_intervention').length,
+    masteredCount: students.filter(s => s.status === 'mastered').length,
+  };
+};
+
+// @desc  Faculty: get results for a specific module with student profiles & diagnostics
 // @route GET /api/results/module/:moduleId
 const getModuleResults = async (req, res) => {
   try {
     const results = await Result.find({ moduleId: req.params.moduleId })
-      .populate('studentId', 'name email')
+      .populate('studentId', 'name email xp level streak')
       .populate('quizId', 'title')
+      .populate('moduleId', 'title')
+      .populate('weakTopics', 'title')
       .sort({ createdAt: -1 });
 
-    const totalStudents = new Set(results.map(r => r.studentId?._id?.toString())).size;
-    const avgScore = results.length
-      ? Math.round(results.reduce((s, r) => s + r.percentage, 0) / results.length)
-      : 0;
+    const analytics = computeResultsAnalytics(results);
+    res.json(analytics);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
 
-    res.json({ results, totalStudents, avgScore });
+// @desc  Faculty: get overall aggregated performance across all own modules
+// @route GET /api/results/faculty-overview
+const getFacultyOverview = async (req, res) => {
+  try {
+    const Module = require('../models/Module');
+    // Find modules created by faculty; if none, fallback to all published modules so faculty can still view analytics
+    let myModules = await Module.find({ createdBy: req.user._id }).select('_id title difficulty status topics');
+    if (!myModules || myModules.length === 0) {
+      myModules = await Module.find().select('_id title difficulty status topics');
+    }
+    const moduleIds = myModules.map(m => m._id);
+
+    const allResults = await Result.find({ moduleId: { $in: moduleIds } })
+      .populate('studentId', 'name email xp level streak')
+      .populate('quizId', 'title')
+      .populate('moduleId', 'title')
+      .populate('weakTopics', 'title')
+      .sort({ createdAt: -1 });
+
+    const analytics = computeResultsAnalytics(allResults);
+
+    res.json({
+      ...analytics,
+      totalModules: myModules.length,
+      totalSubmissions: allResults.length,
+      modules: myModules,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -295,4 +464,11 @@ const getAnalytics = async (req, res) => {
   }
 };
 
-module.exports = { submitQuiz, getMyResults, getStudentDashboard, getModuleResults, getAnalytics };
+module.exports = {
+  submitQuiz,
+  getMyResults,
+  getStudentDashboard,
+  getModuleResults,
+  getFacultyOverview,
+  getAnalytics,
+};
